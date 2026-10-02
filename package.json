@@ -1,0 +1,32 @@
+{
+  "name": "vexur-portal-cliente",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --port 3020",
+    "dev:rede": "nuxt dev --port 3020 --host",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "nuxt": "^4.5.2",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.43",
+    "vue-router": "^5.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/qrcode": "^1.5.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.2",
+    "vue-tsc": "^3.3.11"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

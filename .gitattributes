@@ -1,0 +1,6 @@
+# Final de linha padronizado (LF) para Windows, Linux e CI
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary

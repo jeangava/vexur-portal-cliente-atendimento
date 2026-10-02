@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+/* Tokens do Portal do Cliente — base no design system Vexur (Vexur/design-system),
+   com o roxo escurecido nos botões para garantir contraste com texto branco. */
+@theme {
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-display: "Manrope", "DM Sans", sans-serif;
+
+  --color-roxo: #6955c1;
+  --color-roxo-escuro: #45368f;
+  --color-roxo-icone: #5a47b0;
+  --color-roxo-claro: #f0edfd;
+  --color-roxo-borda: #e2def9;
+  --color-roxo-fundo: #fbfaff;
+
+  --color-tinta: #1d2948;
+  --color-texto: #4a5372;
+  --color-apoio: #5b6480;
+  --color-fundo: #f6f5fb;
+  --color-linha: #eeeff4;
+  --color-campo: #d6d3e8;
+
+  --color-ok: #17693f;
+  --color-ok-claro: #e3f4ea;
+  --color-info: #1a4f8f;
+  --color-info-claro: #e6effa;
+  --color-info-borda: #d9e5f5;
+  --color-atencao: #8a4300;
+  --color-atencao-claro: #fdecd8;
+  --color-atencao-borda: #f4c99a;
+  --color-erro: #a3261b;
+  --color-erro-claro: #fbe3e1;
+  --color-erro-borda: #f0b4ae;
+
+  --color-azul: #1f5fa8;
+  --color-azul-claro: #e6f0fb;
+  --color-verde: #1f7a52;
+  --color-verde-claro: #e5f5ee;
+  --color-laranja: #a8501a;
+  --color-laranja-claro: #fdeee3;
+
+  --shadow-cartao: 0 8px 25px #353d6810;
+  --shadow-botao: 0 6px 13px #7864d033;
+  --shadow-leve: 0 2px 8px #353d6812;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-fundo);
+  color: var(--color-tinta);
+  font-family: var(--font-sans);
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-roxo);
+  outline-offset: 3px;
+}
+
+/* Impressão / Salvar como PDF: folha A4 limpa, sem menus nem botões. */
+@page {
+  size: A4;
+  margin: 14mm;
+}
+
+@media print {
+  html, body {
+    background: #ffffff !important;
+    font-size: 11pt;
+  }
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
