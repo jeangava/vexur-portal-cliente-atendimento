@@ -59,6 +59,10 @@ export default defineNuxtConfig({
       workflowProcess: '',
       repositorioDocumentos: '',
       dominio: '',
+      envioComunicacao: '',
+      regraServicosOnline: '',
+      localidades: '',
+      regraMovimentacaoAlteracaoCadastral: '',
     },
     public: {
       modoMock: true,

@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import type { PainelMovimentacao } from '#shared/types/portal'
+import type { DecisaoDeMovimentacao, PainelMovimentacao } from '#shared/types/portal'
 
 definePageMeta({ layout: 'portal' })
 useHead({ title: 'Movimentação · Portal do Cliente' })
 
 const { data: painel, error } = await useFetch<PainelMovimentacao>('/api/movimentacao')
+// O que o plano libera (regra "Serviços online"): o que não for liberado fica apagado, sem clique.
+const { data: regras } = await useFetch<DecisaoDeMovimentacao[]>('/api/movimentacao/regras', { default: () => [] })
+const libera = (...tipos: DecisaoDeMovimentacao['tipo'][]) => (regras.value ?? []).some(d => tipos.includes(d.tipo) && d.disponivel)
+const podeIncluirEmpresa = computed(() => libera('incluir-titular', 'incluir-dependente'))
+const podeTirarEmpresa = computed(() => libera('excluir-titular', 'excluir-dependente'))
+const podeIncluir = computed(() => libera('incluir-dependente'))
+// Plano encerrado só consulta: o motivo aparece nos cartões apagados.
+const encerrado = computed(() => usuario.value?.contrato?.situacao === 'cancelado')
+const motivoApagado = computed(() => (encerrado.value ? 'Plano encerrado: aqui só dá para consultar.' : undefined))
 const usuario = useUsuario()
 const responsavel = computed(() => usuario.value?.contrato?.papel === 'representante')
 const emAndamento = computed(() => (painel.value?.solicitacoes ?? []).filter(s => solicitacaoEmAberto(s.situacao)).length)
@@ -20,26 +29,14 @@ const emAndamento = computed(() => (painel.value?.solicitacoes ?? []).filter(s =
     </div>
 
     <div class="grid gap-4 md:grid-cols-2 lg:max-w-[880px]">
-      <NuxtLink
-        to="/movimentacao/empresa/incluir"
-        class="flex min-h-[132px] flex-col justify-between gap-3 rounded-[22px] bg-white p-5 text-tinta no-underline shadow-cartao transition-shadow hover:shadow-[0_10px_30px_#353d681c]"
-      >
-        <span class="flex size-[58px] items-center justify-center rounded-[18px] bg-verde-claro text-verde"><Icone nome="familia" :tamanho="30" /></span>
-        <span class="flex flex-col">
-          <span class="text-[20px] font-bold">Incluir pessoas</span>
-          <span class="text-[15px] text-apoio">Uma por vez ou várias com a planilha</span>
-        </span>
-      </NuxtLink>
-      <NuxtLink
-        to="/movimentacao/empresa/excluir"
-        class="flex min-h-[132px] flex-col justify-between gap-3 rounded-[22px] bg-white p-5 text-tinta no-underline shadow-cartao transition-shadow hover:shadow-[0_10px_30px_#353d681c]"
-      >
-        <span class="flex size-[58px] items-center justify-center rounded-[18px] bg-erro-claro text-erro"><Icone nome="sair" :tamanho="30" /></span>
-        <span class="flex flex-col">
-          <span class="text-[20px] font-bold">Tirar do plano</span>
-          <span class="text-[15px] text-apoio">Procure e marque quem vai sair, uma ou várias pessoas</span>
-        </span>
-      </NuxtLink>
+      <CartaoMovimentacao
+        to="/movimentacao/empresa/incluir" titulo="Incluir pessoas" apoio="Uma por vez ou várias com a planilha"
+        icone="familia" cor="bg-verde-claro text-verde" :desabilitado="!podeIncluirEmpresa" :motivo="motivoApagado"
+      />
+      <CartaoMovimentacao
+        to="/movimentacao/empresa/excluir" titulo="Tirar do plano" apoio="Procure e marque quem vai sair, uma ou várias pessoas"
+        icone="sair" cor="bg-erro-claro text-erro" :desabilitado="!podeTirarEmpresa" :motivo="motivoApagado"
+      />
     </div>
 
     <MensagemErro v-if="error" :texto="mensagemDeErro(error, 'Não conseguimos carregar os pedidos agora.')" />
@@ -66,9 +63,10 @@ const emAndamento = computed(() => (painel.value?.solicitacoes ?? []).filter(s =
         <p class="m-0 text-lg text-texto">Inclua ou tire pessoas do seu plano. Tudo fica registrado com um número de protocolo.</p>
       </div>
       <div class="md:w-[320px] md:shrink-0">
-        <BotaoPrincipal to="/movimentacao/incluir">
+        <BotaoPrincipal :to="podeIncluir ? '/movimentacao/incluir' : undefined" :desabilitado="!podeIncluir">
           <Icone nome="familia" :tamanho="22" /> Incluir alguém no plano
         </BotaoPrincipal>
+        <p v-if="!podeIncluir" class="m-0 mt-2 text-sm text-apoio md:text-right">O seu plano não libera incluir pessoas por aqui. Fale com a gente.</p>
       </div>
     </div>
 

@@ -24,10 +24,15 @@ export function cpfValido(valor: string): boolean {
 }
 
 /** Mensagem simples para o cliente, ou null quando o CPF está certo. */
-export function problemaNoCpf(valor: string): string | null {
+/**
+ * `conferirDigitos: false` só no ambiente de integração/homologação, onde a massa de teste tem
+ * CPFs fictícios com dígitos verificadores inválidos. Em produção, sempre confere.
+ * Ex.: problemaNoCpf('123', { conferirDigitos: false }) → 'O CPF tem 11 números. Você digitou 3.'
+ */
+export function problemaNoCpf(valor: string, opcoes: { conferirDigitos?: boolean } = {}): string | null {
   const d = somenteDigitos(valor)
   if (d.length === 0) return 'Digite o seu CPF para continuar.'
   if (d.length !== 11) return `O CPF tem 11 números. Você digitou ${d.length}.`
-  if (!cpfValido(d)) return 'Esse CPF não parece certo. Confira os números e tente de novo.'
+  if (opcoes.conferirDigitos !== false && !cpfValido(d)) return 'Esse CPF não parece certo. Confira os números e tente de novo.'
   return null
 }

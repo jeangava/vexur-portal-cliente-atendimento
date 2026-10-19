@@ -2,6 +2,7 @@
 import type { CanalEnvio, ContatoRecuperacao } from '#shared/types/portal'
 
 const route = useRoute()
+const { loginSomenteCpf } = useRuntimeConfig().public
 const cpfDigitado = useCpfDigitado()
 const { mostrar } = useAviso()
 
@@ -34,7 +35,13 @@ function aoDigitarCpf(evento: Event) {
 }
 
 async function buscarContatos() {
-  const problema = problemaNoCpf(cpf.value)
+  const campo = document.getElementById('cpf-recuperacao') as HTMLInputElement | null
+  if (campo) {
+    cpf.value = formatarCpf(campo.value)
+    campo.value = cpf.value
+    cpfDigitado.value = cpf.value
+  }
+  const problema = problemaNoCpf(cpf.value, { conferirDigitos: !loginSomenteCpf })
   if (problema) { erro.value = problema; return }
   carregando.value = true
   try {
@@ -103,13 +110,17 @@ watch(canal, () => { erro.value = '' })
             maxlength="14" :aria-invalid="!!erro" :aria-describedby="erro ? 'cpf-recuperacao-erro' : undefined"
             class="h-16 rounded-2xl border-2 bg-white px-5 text-2xl font-semibold tracking-wide text-tinta placeholder:text-[#8a91a8] focus:border-roxo"
             :class="erro ? 'border-erro' : 'border-campo'"
-            @input="aoDigitarCpf"
+            @input="aoDigitarCpf" @change="aoDigitarCpf" @blur="aoDigitarCpf"
           >
           <MensagemErro id="cpf-recuperacao-erro" :texto="erro" />
         </div>
         <BotaoPrincipal tipo="submit" :carregando="carregando">
           {{ carregando ? 'Procurando…' : 'Continuar' }}
           <Icone v-if="!carregando" nome="seta" :tamanho="22" :espessura="2.4" />
+        </BotaoPrincipal>
+        <BotaoPrincipal variante="contorno" @click="voltar">
+          <Icone nome="voltar" :tamanho="22" :espessura="2.4" />
+          Voltar para o login
         </BotaoPrincipal>
       </form>
     </template>

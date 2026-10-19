@@ -98,8 +98,11 @@ function imprimir() {
                   {{ g.beneficiario }} <span class="font-semibold text-apoio">· {{ g.parentesco }}</span>
                 </th>
               </tr>
-              <tr v-for="l in g.linhas" :key="l.descricao" class="border-b border-linha">
-                <td class="py-2.5 pr-3 pl-3">{{ l.descricao }}</td>
+              <tr v-for="(l, i) in g.linhas" :key="`${l.descricao}-${l.produto}-${i}`" class="border-b border-linha">
+                <td class="py-2.5 pr-3 pl-3">
+                  <span class="block">{{ l.descricao }}<template v-if="l.detalhe"> <span class="text-apoio">({{ l.detalhe }})</span></template></span>
+                  <span v-if="l.produto" class="block text-sm text-apoio">{{ l.produto }}</span>
+                </td>
                 <td class="py-2.5 text-right whitespace-nowrap">{{ formatarMoeda(l.valor) }}</td>
               </tr>
               <tr>

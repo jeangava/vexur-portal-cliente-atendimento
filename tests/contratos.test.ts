@@ -56,10 +56,34 @@ describe('qual plano abrir no login', () => {
 
   it('responsável que também é titular na mesma empresa: fica só a visão de responsável', () => {
     const responsavel: ContratoCliente = { ...empresa, id: 'r', papel: 'representante' }
-    const outraEmpresa: ContratoCliente = { ...empresa, id: 'o', numero: '2' }
+    const outraEmpresa: ContratoCliente = { ...empresa, id: 'o', numero: '2', empresa: 'Beta' }
     const lista = simplificarContratos([empresa, responsavel, outraEmpresa, base])
     expect(lista.map(c => c.id)).toEqual(['r', 'o', 'a'])
     expect(contratoAutomatico(simplificarContratos([empresa, responsavel]))).toBe(responsavel)
+  })
+
+  it('responsável também titular (contrato da empresa com outro número): entra como responsável', () => {
+    const responsavel: ContratoCliente = { ...empresa, id: 'r', numero: '900', papel: 'representante', empresa: 'ALFA ' }
+    const lista = simplificarContratos([empresa, responsavel])
+    expect(lista.map(c => c.id)).toEqual(['r'])
+  })
+
+  it('responsável também titular: liga pelo número do contrato da empresa, mesmo com nomes diferentes', () => {
+    const responsavel: ContratoCliente = { ...empresa, id: 'r', numero: '900', papel: 'representante', empresa: 'Alfa Fantasia', contratoEmpresa: '900' }
+    const titular: ContratoCliente = { ...empresa, id: 't', numero: '55', empresa: 'ALFA LTDA', contratoEmpresa: '900' }
+    expect(simplificarContratos([titular, responsavel]).map(c => c.id)).toEqual(['r'])
+  })
+
+  it('responsável por uma empresa e titular de outro plano: pergunta qual abrir', () => {
+    const responsavel: ContratoCliente = { ...empresa, id: 'r', numero: '900', papel: 'representante' }
+    expect(contratoAutomatico(simplificarContratos([base, responsavel]))).toBeUndefined()
+    expect(usuarioDoContrato({ nome: 'A', primeiroNome: 'A' }, [base, responsavel], responsavel).podeTrocarContrato).toBe(true)
+  })
+
+  it('responsável por duas empresas: pergunta', () => {
+    const r1: ContratoCliente = { ...empresa, id: 'r1', numero: '900', papel: 'representante' }
+    const r2: ContratoCliente = { ...empresa, id: 'r2', numero: '901', papel: 'representante', empresa: 'Beta' }
+    expect(contratoAutomatico([r1, r2])).toBeUndefined()
   })
 
   it('sem plano escolhido, nenhuma área liberada', () => {

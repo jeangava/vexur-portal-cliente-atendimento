@@ -27,6 +27,11 @@ export function useSair() {
   }
 }
 
+/** Popup "Ver outro contrato" aberto ou fechado. */
+export function useSeletorContratos() {
+  return useState<boolean>('seletorContratos', () => false)
+}
+
 /** Aviso curto no rodapé da tela (ex.: "Código copiado"). */
 export function useAviso() {
   const texto = useState<string>('aviso', () => '')
@@ -42,7 +47,9 @@ export function useAviso() {
 /** Extrai a mensagem amigável que o servidor mandou, sem mostrar detalhes técnicos. */
 export function mensagemDeErro(erro: unknown, padrao = 'Algo deu errado. Tente de novo em instantes.'): string {
   const e = erro as { data?: { message?: string }, statusCode?: number }
-  if (e?.statusCode && e.statusCode >= 500 && e.statusCode !== 501) return padrao
+  // Só em desenvolvimento mostra o aviso de configuração (503: falta chave no .env); para o cliente fica a frase padrão.
+  const configuracao = import.meta.dev && e?.statusCode === 503
+  if (e?.statusCode && e.statusCode >= 500 && e.statusCode !== 501 && !configuracao) return padrao
   return e?.data?.message || padrao
 }
 

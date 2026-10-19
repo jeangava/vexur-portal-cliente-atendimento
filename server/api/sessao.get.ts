@@ -5,5 +5,7 @@ export default defineEventHandler(async (event) => {
     await sessao.clear()
     return { usuario: null, trocarSenha: false }
   }
-  return { usuario: sessao.data.usuario ?? null, trocarSenha: !!sessao.data.trocarSenha }
+  const usuario = sessao.data.usuario
+  // Regras de acesso recalculadas do contrato: o menu acompanha as regras novas sem precisar entrar de novo.
+  return { usuario: usuario ? { ...usuario, acesso: usuario.contrato ? acessoDoContrato(usuario.contrato) : usuario.acesso } : null, trocarSenha: !!sessao.data.trocarSenha }
 })

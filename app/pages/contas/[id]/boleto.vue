@@ -20,8 +20,9 @@ async function copiar() {
   mostrar(ok ? 'Número copiado. Agora abra o app do seu banco.' : 'Não deu para copiar. Tente baixar o boleto.')
 }
 
-function baixar() {
-  mostrar('O PDF do boleto chega junto com a integração do faturamento.')
+async function baixar() {
+  if (!boleto.value?.pdfDisponivel) { mostrar('O PDF deste boleto ainda não está disponível. Copie o número e pague no app do banco.'); return }
+  await navigateTo('/api/faturas/' + id + '/boleto-pdf', { external: true, open: { target: '_blank' } })
 }
 </script>
 

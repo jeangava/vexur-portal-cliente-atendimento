@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 import QRCode from 'qrcode'
 import type { LoginNoGateway } from './integracao'
 import type {
-  BeneficiariosEmpresa, ConferenciaPlanilha, DadosExclusao, DadosExclusaoEmpresa, DadosInclusao, DeclaracaoSaude,
-  LinhaConferida, LinhaInclusaoEmpresa, OpcoesMovimentacao, PainelMovimentacao, PessoaEmpresa, Solicitacao,
+  BeneficiariosEmpresa, CampoAlteravel, CampoDoServicoTela, DecisaoDeAlteracao, DecisaoDeMovimentacao, EnderecoDoCep, OpcaoSimples, ResultadoDaAlteracao, TipoDeMovimentacao, ConferenciaPlanilha, DadosExclusao, DadosExclusaoEmpresa, DadosInclusao, CadastroDaEmpresa, CadastroDoContrato, DeclaracaoSaude, DocumentoGerado, FamiliaDaEmpresa,
+  LinhaConferida, LinhaInclusaoEmpresa, OpcoesMovimentacao, PainelMovimentacao, PedidoDeAlteracao, PessoaEmpresa, Solicitacao,
 } from '#shared/types/portal'
 import type { ContextoInclusao } from '#shared/utils/inclusaoEmpresa'
+import type { CampoDoServico } from './servicosRotas'
+import type { AtorDaAlteracao } from '#shared/utils/regraServicosOnline'
 import type { SolicitacaoMock } from './mock'
 import type { CanalEnvio, Comunicado, ContatoRecuperacao, ContratoCliente, DisponibilidadeServico, ExtratoFatura, Fatura, MinhaFamilia, PagamentoBoleto, PagamentoPix, UsuarioPortal } from '#shared/types/portal'
 
@@ -87,7 +89,7 @@ export async function definirSenha(cpf: string, novaSenha: string): Promise<void
  * Quando a mensalidade é paga, ele deixa de ser vigente sozinho e fica só no histórico.
  */
 export async function listarComunicados(usuario: UsuarioPortal): Promise<Comunicado[]> {
-  if (!emModoMock()) aindaNaoIntegrado()
+  if (!emModoMock()) return mapearComunicados(await comunicadosEnviadosNoGateway())
   const faturas = await listarFaturas(usuario)
   const emAberto = new Set(faturas.filter(f => f.situacao !== 'paga').map(f => f.id))
   return comunicadosDeTeste(faturas, usuario.contrato).map(c => ({
@@ -106,9 +108,108 @@ export async function obterComunicado(usuario: UsuarioPortal, id: string): Promi
   return comunicado
 }
 
+const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro']
+
+/** Anos e competências (mês/ano) em que o contrato teve cobrança: as opções dos campos "ano" e "competência". */
+async function opcoesDasCobrancas(): Promise<{ anos: string[], competencias: { valor: string, rotulo: string }[] }> {
+  const cobrancas = await cobrancasNoGateway().catch(() => [])
+  const anoMes = new Set<string>()
+  for (const c of cobrancas) {
+    const texto = String(c.anoMesCompetencia ?? '').replace(/\D/g, '') || paraDataIso(c.dataVencimento).replace(/-/g, '').slice(0, 6)
+    if (/^\d{6}$/.test(texto)) anoMes.add(texto)
+  }
+  const ordenados = [...anoMes].sort().reverse()
+  return {
+    anos: [...new Set(ordenados.map(t => t.slice(0, 4)))],
+    competencias: ordenados.map(t => ({ valor: t.slice(4) + '/' + t.slice(0, 4), rotulo: MESES[Number(t.slice(4)) - 1] + ' de ' + t.slice(0, 4) })),
+  }
+}
+
+/**
+ * Real: lista os documentos AUTORIZADOS para o contrato (regra de comunicação) e só eles.
+ * A carta de tempo de permanência nunca entra. O que o serviço marca como bloqueado agora também fica de fora.
+ * Só entram os tipos que o portal sabe gerar (servicosRotas.ts).
+ */
+async function servicosDoContrato(usuario: UsuarioPortal): Promise<DisponibilidadeServico[]> {
+  const comunicacoes = await comunicacoesNoGateway()
+  const responsavel = usuario.contrato?.papel === 'representante'
+  const aptos = comunicacoes.flatMap((c) => {
+    const tipo = String(c.tipoComunicacao ?? '').trim()
+    if (!tipo || comunicadoProibido(tipo) || c.bloqueiaEnvio) return []
+    const rota = rotaDoServico(tipo)
+    if (!rota) return []
+    // Responsável: só o que é da empresa ou envolve valores (sempre da empresa inteira). Titular: o que é pessoal.
+    if (responsavel ? !(rota.paraEmpresa || rota.valores) : rota.paraEmpresa) return []
+    return [{ tipo, rota }]
+  })
+  const precisaDeOpcoes = aptos.some(a => a.rota.campos.length)
+  const opcoes = precisaDeOpcoes ? await opcoesDasCobrancas() : { anos: [], competencias: [] }
+  const vistos = new Set<string>()
+  const itens: DisponibilidadeServico[] = []
+  for (const { tipo, rota } of aptos) {
+    const id = idDoServicoDoTipo(tipo)
+    if (vistos.has(id)) continue
+    vistos.add(id)
+    const campos: CampoDoServicoTela[] = rota.campos.map(campo => campo === 'ano'
+      ? { id: 'ano' as const, rotulo: 'De qual ano?', opcoes: opcoes.anos.map(a => ({ valor: a, rotulo: a })) }
+      : { id: 'competencia' as const, rotulo: 'De qual mês?', opcoes: opcoes.competencias })
+    const semOpcao = campos.some(c => !c.opcoes.length)
+    itens.push({
+      id, disponivel: !semOpcao, titulo: rota.titulo, campos,
+      ...(semOpcao ? { motivo: 'Ainda não há dados neste contrato para gerar este documento.' } : {}),
+    })
+  }
+  return itens
+}
+
+/** Gera o documento de um serviço do contrato logado e devolve o link do PDF. Não envia e-mail. */
+export async function gerarDocumentoDoServico(usuario: UsuarioPortal, id: string, form: Record<string, unknown>): Promise<DocumentoGerado> {
+  if (emModoMock()) throw createError({ statusCode: 501, message: 'No ambiente de teste o documento é enviado por e-mail.' })
+  const servico = (await servicosDoContrato(usuario)).find(s => s.id === id)
+  if (!servico) throw createError({ statusCode: 404, message: 'Esse serviço não está disponível para o seu contrato.' })
+  if (!servico.disponivel) throw createError({ statusCode: 409, message: servico.motivo ?? 'Esse serviço não está disponível agora.' })
+  // O tipo vem da lista do próprio contrato, nunca da tela: reencontra pelo identificador.
+  const tipo = (await comunicacoesNoGateway()).map(c => String(c.tipoComunicacao ?? '').trim()).find(t => t && idDoServicoDoTipo(t) === id)
+  const rota = tipo ? rotaDoServico(tipo) : undefined
+  if (!tipo || !rota) throw createError({ statusCode: 404, message: 'Esse serviço não está disponível para o seu contrato.' })
+
+  // Só aceita valores que estão nas opções do contrato.
+  const escolhidos: Partial<Record<CampoDoServico, string>> = {}
+  for (const campo of servico.campos ?? []) {
+    const valor = String(form[campo.id] ?? '').trim()
+    if (!campo.opcoes.some(o => o.valor === valor)) throw createError({ statusCode: 400, message: 'Escolha ' + (campo.id === 'ano' ? 'o ano' : 'o mês') + ' da lista.' })
+    escolhidos[campo.id] = valor
+  }
+
+  const { contrato, acesso } = await acessoDaSessao(useEvent())
+  // Responsável: o documento é o da EMPRESA (o serviço trata o contrato de entrada do grupo como empresarial).
+  const idContratoAdesao = usuario.contrato?.papel === 'representante' && !rota.paraEmpresa
+    ? await idContratoDeEntradaDaEmpresa()
+    : contrato.idContratoAdesao
+  const resposta = await gerarDocumentoNoGateway(rota, rota.corpo({
+    tipoComunicacao: tipo,
+    idContratoAdesao,
+    idContratoConveniado: contrato.idContratoConveniado,
+  }, escolhidos))
+
+  const arquivos = (resposta?.visualizacaoDocumento ?? []).flatMap((d, i) => {
+    const url = typeof d === 'string' ? d : String(d?.urlArquivo ?? '')
+    if (!/^https:\/\//i.test(url)) return []
+    // O nome é o do documento no sistema de contratos (ex.: "Aplicativo da operadora"); o título do serviço é só o último recurso.
+    const dado = typeof d === 'object' && d ? String(d.tipoComunicacao ?? d.nomeArquivo ?? '').trim() : ''
+    const nome = dado ? dado.charAt(0).toUpperCase() + dado.slice(1).toLowerCase() : (rota.titulo + (i ? ' ' + (i + 1) : ''))
+    return [{ id: guardarDocumentoGerado(url, nome, acesso.login), nome }]
+  })
+  if (!arquivos.length) {
+    const aviso = String(resposta?.mensagem ?? '').trim()
+    throw createError({ statusCode: 422, message: aviso || 'Não há nada para emitir neste caso. Se você acha que deveria haver, fale com a gente.' })
+  }
+  return { arquivos, aviso: resposta?.tipoMensagem === 'ERRO' ? undefined : (String(resposta?.mensagem ?? '').trim() || undefined) }
+}
+
 /** Regras de cada serviço para o usuário logado. */
 export async function disponibilidadeDosServicos(usuario: UsuarioPortal): Promise<DisponibilidadeServico[]> {
-  if (!emModoMock()) aindaNaoIntegrado()
+  if (!emModoMock()) return servicosDoContrato(usuario)
   const faturas = await listarFaturas(usuario)
   // Débito = conta vencida e não paga. Conta que ainda vai vencer não impede a quitação.
   const atrasada = faturas.find(f => f.situacao === 'atrasada')
@@ -134,6 +235,10 @@ export async function disponibilidadeDosServicos(usuario: UsuarioPortal): Promis
 
 /** Gera o documento e envia para o e-mail do cadastro. */
 export async function solicitarServico(usuario: UsuarioPortal, id: string, ano?: number): Promise<{ destino: string, protocolo: string }> {
+  // O pedido gera o documento e dispara e-mail pelo fluxo de comunicados: só liga depois de testar com CPF de teste.
+  if (!emModoMock()) {
+    throw createError({ statusCode: 501, message: 'O envio de documentos pelo portal ainda não está ligado. Por enquanto, você pode ver quais estão disponíveis.' })
+  }
   const servico = buscarServico(id)
   if (!servico) throw createError({ statusCode: 404, message: 'Não encontramos esse serviço.' })
   const regra = (await disponibilidadeDosServicos(usuario)).find(d => d.id === id)
@@ -157,8 +262,20 @@ export async function solicitarServico(usuario: UsuarioPortal, id: string, ano?:
   return { destino, protocolo: solicitacao.protocolo }
 }
 
+/**
+ * O contrato do beneficiário dá o nome amigável de cada produto; se falhar, vale o nome técnico.
+ * O contrato da empresa (responsável de PME) não tem produtos próprios: nada a buscar.
+ */
+async function nomesDeProdutoDoContrato(usuario: UsuarioPortal) {
+  if (usuario.contrato?.papel === 'representante') return nomesDeProduto(null)
+  return nomesDeProduto(await contratoNoGateway().catch(() => null))
+}
+
 export async function listarFaturas(usuario: UsuarioPortal): Promise<Fatura[]> {
-  if (!emModoMock()) return mapearFaturas(await cobrancasNoGateway())
+  if (!emModoMock()) {
+    const [cobrancas, nomes] = await Promise.all([cobrancasNoGateway(), nomesDeProdutoDoContrato(usuario)])
+    return mapearFaturas(cobrancas, new Date(), nomes)
+  }
   return faturasDeTeste(String(useRuntimeConfig().mockSituacao), usuario.contrato)
 }
 
@@ -168,6 +285,169 @@ export async function obterFatura(usuario: UsuarioPortal, id: string): Promise<F
   const fatura = (await listarFaturas(usuario)).find(f => f.id === id)
   if (!fatura) throw createError({ statusCode: 404, message: 'Não encontramos essa conta.' })
   return fatura
+}
+
+/** Contato, endereço, pagamento e responsáveis do contrato do usuário logado (só leitura). Pagamento só para quem vê valores. */
+export async function obterCadastro(usuario: UsuarioPortal): Promise<CadastroDoContrato> {
+  if (emModoMock()) return usuario.acesso.mostrarValores ? CADASTRO_TESTE : { ...CADASTRO_TESTE, pagamento: [] }
+  return mapearCadastroDoContrato(await contratoNoGateway(), { pagamento: usuario.acesso.mostrarValores })
+}
+
+/** Dados da empresa, do representante, contatos e pagamento (só o responsável pela empresa). */
+export async function obterCadastroDaEmpresa(usuario: UsuarioPortal): Promise<CadastroDaEmpresa> {
+  exigirRepresentante(usuario)
+  if (emModoMock()) return CADASTRO_EMPRESA_TESTE
+  const cadastro = mapearCadastroDaEmpresa((await titularesDaEmpresaNoGateway())[0])
+  if (!cadastro) throw createError({ statusCode: 404, message: 'Não encontramos os dados da empresa.' })
+  return cadastro
+}
+
+function atorDe(usuario: UsuarioPortal): AtorDaAlteracao {
+  return usuario.contrato?.papel === 'representante' ? 'representante' : 'titular'
+}
+
+/** Quem pode pedir alteração: o titular com direito a movimentação, ou o responsável pela empresa. */
+function podePedirAlteracao(usuario: UsuarioPortal): boolean {
+  return usuario.acesso.areas.includes(atorDe(usuario) === 'representante' ? 'empresa' : 'movimentacao')
+}
+
+/**
+ * O que o ator logado pode alterar e como, segundo a regra "Serviços online":
+ * na hora (Imediato) ou por aprovação da administradora (Sob aprovação). Sem regra, nada é oferecido.
+ */
+export async function decisoesDeAlteracao(usuario: UsuarioPortal, contratoAlvo?: string): Promise<DecisaoDeAlteracao[]> {
+  const ator = atorDe(usuario)
+  if (!podePedirAlteracao(usuario)) return decisoesDaRegra(null, ator)
+  if (emModoMock()) {
+    // O responsável só altera família da própria empresa.
+    if (contratoAlvo && !(await beneficiariosEmpresa(usuario)).titulares.some(t => t.id === contratoAlvo)) return decisoesDaRegra(null, ator)
+    return decisoesDaRegra(REGRA_SERVICOS_ONLINE_TESTE, ator)
+  }
+  // Se o serviço da regra não responder, o jeito seguro é não oferecer nada.
+  try {
+    if (contratoAlvo && ator === 'representante') {
+      // A família escolhida é conferida contra a lista da empresa; a regra vale pelo produto dela.
+      return decisoesDaRegra(await regraServicosOnlineNoGateway(await contratoDeTitularDaEmpresaNoGateway(contratoAlvo)), ator)
+    }
+    return decisoesDaRegra(await regraServicosOnlineNoGateway(), ator)
+  } catch {
+    return decisoesDaRegra(null, ator)
+  }
+}
+
+/**
+ * O que o ator pode fazer na Movimentação (incluir e tirar titular ou dependente), segundo a regra "Serviços online".
+ * Sem regra, ou sem direito a movimentação, nada é liberado.
+ */
+export async function decisoesDeMovimentacaoDoAtor(usuario: UsuarioPortal): Promise<DecisaoDeMovimentacao[]> {
+  const ator = atorDe(usuario)
+  if (!usuario.acesso.areas.includes('movimentacao')) return decisoesDeMovimentacao(null, ator)
+  const regra = emModoMock() ? REGRA_SERVICOS_ONLINE_TESTE : await regraServicosOnlineNoGateway().catch(() => null)
+  return decisoesDeMovimentacao(regra, ator)
+}
+
+/** Recusa no servidor o que a regra não libera (a tela só esconde). */
+async function exigirMovimentacao(usuario: UsuarioPortal, tipo: TipoDeMovimentacao) {
+  const decisao = (await decisoesDeMovimentacaoDoAtor(usuario)).find(d => d.tipo === tipo)
+  if (!decisao?.disponivel) {
+    throw createError({ statusCode: 403, message: 'O seu plano não libera isso por aqui. Fale com a gente.' })
+  }
+}
+
+/** Endereço oficial do CEP (mock ou serviço de localidades do Vexur). */
+export async function enderecoDoCep(cep: string): Promise<EnderecoDoCep | undefined> {
+  return emModoMock() ? cepDeTeste(cep) : consultarCepNoGateway(cep)
+}
+
+/** Pessoas do grupo familiar que podem ter os dados alterados: o próprio grupo do titular, ou a família escolhida pelo responsável. */
+async function pessoasDoGrupoParaAlteracao(usuario: UsuarioPortal, contratoAlvo?: string): Promise<{ id: string, nome: string }[]> {
+  if (atorDe(usuario) === 'representante') {
+    if (!contratoAlvo) return []
+    const f = await familiaDoTitularDaEmpresa(usuario, contratoAlvo)
+    return [f.titular, ...f.dependentes].map(p => ({ id: p.id, nome: p.nome }))
+  }
+  const f = await obterFamilia(usuario)
+  return [f.titular, ...f.dependentes].map(p => ({ id: p.id, nome: p.nome }))
+}
+
+/**
+ * Pedido de alteração de dados. A regra decide:
+ * - Imediato: o dado muda na hora, e o pedido já nasce concluído (fica registrado em Meus pedidos).
+ * - Sob aprovação: o dado NÃO muda; abre um pedido para a administradora avaliar (em análise, ou pendente se pedir documento).
+ * No sistema real, os dois caminhos abrem o protocolo/fluxo no Vexur (ainda não ligado: precisa do fluxo de trabalho).
+ */
+export async function pedirAlteracaoCadastral(usuario: UsuarioPortal, dados: Partial<PedidoDeAlteracao>): Promise<ResultadoDaAlteracao> {
+  const campo = String(dados.campo ?? '')
+  const problema = problemaNaAlteracao(campo, dados.valores ?? {})
+  if (problema) throw createError({ statusCode: 400, message: problema })
+  if (!podePedirAlteracao(usuario)) throw createError({ statusCode: 403, message: 'Você não pode alterar dados por aqui. Fale com a gente.' })
+  const contratoAlvo = atorDe(usuario) === 'representante' ? String(dados.contrato ?? '').trim() || undefined : undefined
+  const decisao = (await decisoesDeAlteracao(usuario, contratoAlvo)).find(d => d.campo === campo)
+  if (!decisao?.disponivel) throw createError({ statusCode: 403, message: 'Esse dado não pode ser alterado por aqui. Fale com a gente.' })
+  // Documento que a regra pede: tem que vir anexado junto com o pedido (um por documento exigido).
+  const documentosNomes: string[] = []
+  for (const exigido of decisao.documentos) {
+    const grupo = (dados.anexos ?? []).find(a => a.documento === exigido)
+    const ids = (grupo?.ids ?? []).slice(0, 5)
+    if (!ids.length) throw createError({ statusCode: 400, message: 'Anexe o documento: ' + exigido + '.' })
+    if (emModoMock() && ids.some(id => !documentosMock.has(id))) throw createError({ statusCode: 400, message: 'Um dos arquivos não foi recebido. Anexe de novo: ' + exigido + '.' })
+    if (emModoMock()) documentosNomes.push(exigido + ': ' + ids.map(id => documentosMock.get(id)).join(', '))
+  }
+  if (!emModoMock()) {
+    throw createError({ statusCode: 501, message: 'A alteração de dados pelo portal ainda não está ligada ao sistema. Por enquanto, fale com a gente.' })
+  }
+
+  // Responsável: a alteração é da FAMÍLIA escolhida (nome do titular no título); sem família, é a da própria empresa.
+  const empresa = atorDe(usuario) === 'representante' && !contratoAlvo
+  const familia = contratoAlvo ? (await beneficiariosEmpresa(usuario)).titulares.find(t => t.id === contratoAlvo) : undefined
+  // Dados cadastrais: de uma pessoa do grupo (conferida contra o grupo do próprio ator); o nome vai no título.
+  let pessoaNome = ''
+  if (campo === 'dados') {
+    const pessoa = (await pessoasDoGrupoParaAlteracao(usuario, contratoAlvo)).find(p => p.id === String(dados.pessoa ?? ''))
+    if (!pessoa) throw createError({ statusCode: 400, message: 'Escolha de qual pessoa são os dados.' })
+    pessoaNome = pessoa.nome
+  }
+  const titulo = tituloDaAlteracao(campo) + (pessoaNome ? ' de ' + pessoaNome : empresa ? ' da empresa' : familia ? ' de ' + familia.nome : '')
+  const aberto = solicitacoesMock.some(s => s.contratoId === idContrato(usuario) && s.tipo === 'alteracao-cadastral' && s.titulo === titulo && s.situacao !== 'concluida' && s.situacao !== 'indeferida')
+  if (aberto) throw createError({ statusCode: 409, message: 'Já existe um pedido assim aguardando resposta. Acompanhe em Meus pedidos.' })
+
+  let valores = valoresDaAlteracao(campo, dados.valores ?? {})
+  // Endereço: rua, bairro, cidade e estado são os do CEP (a tela não é a fonte); só número e complemento são livres.
+  if (campo === 'endereco') {
+    const oficial = await enderecoDoCep(valores.cep ?? '').catch(() => 'falhou' as const)
+    if (oficial === 'falhou') throw createError({ statusCode: 503, message: 'Não conseguimos conferir o CEP agora. Tente de novo em instantes.' })
+    if (!oficial) throw createError({ statusCode: 400, message: 'Não encontramos esse CEP. Confira os números.' })
+    valores = { ...valores, logradouro: oficial.logradouro || valores.logradouro || '', bairro: oficial.bairro || valores.bairro || '', municipio: oficial.municipio, uf: oficial.uf }
+  }
+  const agora = new Date().toISOString()
+  const base = { contratoId: idContrato(usuario), protocolo: novoProtocolo(), categoria: 'cadastro' as const, tipo: 'alteracao-cadastral' as const, titulo, criadaEm: isoDe(new Date()), anexos: [] }
+
+  if (decisao.atendimento === 'imediato') {
+    aplicarAlteracaoNoMock(empresa ? CADASTRO_EMPRESA_TESTE : contratoAlvo ? cadastroDaFamiliaTeste(contratoAlvo) : CADASTRO_TESTE, campo, valores)
+    const solicitacao: SolicitacaoMock = {
+      ...base, situacao: 'concluida', detalhe: 'A alteração foi feita na hora.',
+      resultado: 'Alteração realizada com sucesso. O dado já está atualizado.',
+      historico: [
+        { quando: agora, texto: 'Pedido feito pelo portal.' },
+        ...(documentosNomes.length ? [{ quando: agora, texto: 'Documentos enviados — ' + documentosNomes.join('; ') + '.' }] : []),
+        { quando: agora, texto: 'Alteração realizada na hora, conforme a regra do plano.' },
+      ],
+    }
+    solicitacoesMock.push(solicitacao)
+    return { pedido: paraCliente(solicitacao), imediata: true }
+  }
+
+  const solicitacao: SolicitacaoMock = {
+    ...base,
+    situacao: 'em-analise',
+    detalhe: 'A administradora vai avaliar o pedido. O dado só muda depois da aprovação, e você acompanha por aqui.',
+    historico: [
+      { quando: agora, texto: 'Pedido enviado pelo portal.' },
+      ...(documentosNomes.length ? [{ quando: agora, texto: 'Documentos enviados — ' + documentosNomes.join('; ') + '.' }] : []),
+    ],
+  }
+  solicitacoesMock.push(solicitacao)
+  return { pedido: paraCliente(solicitacao), imediata: false }
 }
 
 /** Titular e dependentes do contrato do usuário logado, com os produtos de cada um. */
@@ -190,17 +470,52 @@ function novoProtocolo(): string {
   return `${new Date().getFullYear()}-${String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0')}`
 }
 
+/**
+ * No sistema real, o pedido de saída precisa abrir o protocolo no Vexur (fluxo de trabalho, que grava em produção).
+ * Enquanto isso não estiver ligado, recusa com clareza em vez de fingir que enviou.
+ */
+function semProtocoloNoSistemaReal() {
+  if (!emModoMock()) {
+    throw createError({ statusCode: 501, message: 'O pedido de saída ainda não está ligado ao sistema. Por enquanto, fale com a gente.' })
+  }
+}
+
+/** Motivos de cancelamento do Vexur; se o cadastro não responder, a lista padrão do portal. */
+async function motivosDeSaida(usuario: UsuarioPortal): Promise<OpcaoSimples[]> {
+  const padrao = usuario.contrato?.tipo === 'empresarial' ? MOTIVOS_EXCLUSAO_EMPRESA_TESTE : MOTIVOS_EXCLUSAO_TESTE
+  if (emModoMock()) return padrao
+  const textos = await motivosDeCancelamentoNoGateway().catch(() => [] as string[])
+  if (!textos.length) return padrao
+  return textos.map(t => ({ id: t, rotulo: t.charAt(0).toUpperCase() + t.slice(1).toLowerCase() }))
+}
+
+/** Data de saída: a das opções prontas, ou a que o cliente escolheu (de hoje até um ano). */
+function dataDaSaida(opcao: { data: string, escolheData?: boolean }, informada?: string): string {
+  if (!opcao.escolheData) return opcao.data
+  const dia = String(informada ?? '').trim()
+  const hojeIso = isoDe(new Date())
+  const limite = isoDe(new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate()))
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || Number.isNaN(new Date(dia + 'T12:00:00').getTime())) {
+    throw createError({ statusCode: 400, message: 'Escolha a data em que a pessoa sai do plano.' })
+  }
+  if (dia < hojeIso) throw createError({ statusCode: 400, message: 'A data não pode ser antes de hoje.' })
+  if (dia > limite) throw createError({ statusCode: 400, message: 'A data precisa ser dentro do próximo ano.' })
+  return dia
+}
+
 export async function opcoesMovimentacao(usuario: UsuarioPortal): Promise<OpcoesMovimentacao> {
-  if (!emModoMock()) aindaNaoIntegrado()
+  const real = !emModoMock()
   const hoje = new Date()
   const fimDoMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0)
   return {
-    parentescos: PARENTESCOS_TESTE,
-    tiposPlanoAnterior: TIPOS_PLANO_ANTERIOR_TESTE,
-    motivosExclusao: usuario.contrato?.tipo === 'empresarial' ? MOTIVOS_EXCLUSAO_EMPRESA_TESTE : MOTIVOS_EXCLUSAO_TESTE,
+    // Incluir ainda não está ligado ao sistema real: lá essas listas ficam vazias.
+    parentescos: real ? [] : PARENTESCOS_TESTE,
+    tiposPlanoAnterior: real ? [] : TIPOS_PLANO_ANTERIOR_TESTE,
+    motivosExclusao: await motivosDeSaida(usuario),
     quandoExcluir: [
       { id: 'fim-do-mes', rotulo: `No fim deste mês (${formatarData(isoDe(fimDoMes))})`, apoio: 'A pessoa continua com atendimento até lá.', data: isoDe(fimDoMes) },
       { id: 'imediato', rotulo: 'A partir de hoje', apoio: 'O atendimento para já hoje.', data: isoDe(hoje) },
+      { id: 'outra-data', rotulo: 'Escolher uma data', apoio: 'Você informa o dia em que a pessoa sai.', data: '', escolheData: true },
     ],
   }
 }
@@ -223,7 +538,13 @@ function paraCliente(s: SolicitacaoMock): Solicitacao {
 
 /** Movimentação mostra exclusivamente os pedidos de movimentação. */
 export async function painelMovimentacao(usuario: UsuarioPortal): Promise<PainelMovimentacao> {
+  // O responsável pela empresa usa a lista da empresa (não há "família" para montar aqui): só os pedidos.
+  if (atorDe(usuario) === 'representante') {
+    return { beneficiarios: [], solicitacoes: (await listarPedidos(usuario)).filter(s => s.categoria === 'movimentacao') }
+  }
   const familia = await obterFamilia(usuario)
+  const decisoes = await decisoesDeMovimentacaoDoAtor(usuario)
+  const libera = (t: TipoDeMovimentacao) => !!decisoes.find(d => d.tipo === t)?.disponivel
   const solicitacoes = (await listarPedidos(usuario)).filter(s => s.categoria === 'movimentacao')
   const pessoas = [familia.titular, ...familia.dependentes]
   return {
@@ -231,7 +552,7 @@ export async function painelMovimentacao(usuario: UsuarioPortal): Promise<Painel
       const exclusaoEmAndamento = solicitacoes.find(s => s.tipo === 'exclusao' && s.beneficiarioId === p.id && solicitacaoEmAberto(s.situacao))
       return {
         id: p.id, nome: p.nome, parentesco: p.parentesco, titular: p.titular,
-        podeExcluir: !p.titular && !exclusaoEmAndamento,
+        podeExcluir: !exclusaoEmAndamento && libera(p.titular ? 'excluir-titular' : 'excluir-dependente'),
         exclusaoEmAndamento,
       }
     }),
@@ -268,6 +589,7 @@ export async function guardarDocumento(nome: string): Promise<{ id: string, nome
 
 export async function pedirInclusao(usuario: UsuarioPortal, cpfTitular: string, dados: DadosInclusao): Promise<Solicitacao> {
   exigirTitularDaFamilia(usuario)
+  await exigirMovimentacao(usuario, 'incluir-dependente')
   const opcoes = await opcoesMovimentacao(usuario)
   // Revalida as etapas 1 e 2 no servidor: a tela nunca é a única barreira.
   const errosEvento = validarEventoInclusao(dados, {
@@ -329,21 +651,23 @@ export async function pedirExclusao(usuario: UsuarioPortal, dados: DadosExclusao
   const [painel, opcoes] = await Promise.all([painelMovimentacao(usuario), opcoesMovimentacao(usuario)])
   const pessoa = painel.beneficiarios.find(b => b.id === dados.beneficiario)
   if (!pessoa) throw createError({ statusCode: 400, message: 'Escolha quem vai sair do plano.' })
-  if (pessoa.titular) throw createError({ statusCode: 400, message: 'Para tirar o titular é preciso cancelar o plano. Fale com a gente.' })
+  await exigirMovimentacao(usuario, pessoa.titular ? 'excluir-titular' : 'excluir-dependente')
   if (pessoa.exclusaoEmAndamento) {
     throw createError({ statusCode: 409, message: `Já existe um pedido de saída para ${pessoa.nome} (protocolo ${pessoa.exclusaoEmAndamento.protocolo}).` })
   }
   if (!opcoes.motivosExclusao.some(m => m.id === dados.motivo)) throw createError({ statusCode: 400, message: 'Escolha o motivo da saída.' })
   const quando = opcoes.quandoExcluir.find(q => q.id === dados.quando)
   if (!quando) throw createError({ statusCode: 400, message: 'Escolha a partir de quando a pessoa sai do plano.' })
+  const dataSaida = dataDaSaida(quando, dados.data)
   if (!dados.aceite) throw createError({ statusCode: 400, message: 'Confirme que você entendeu para enviar.' })
+  semProtocoloNoSistemaReal()
 
   const solicitacao: SolicitacaoMock = {
     contratoId: idContrato(usuario), protocolo: novoProtocolo(), categoria: 'movimentacao', tipo: 'exclusao',
     titulo: `Tirar ${pessoa.nome} do plano`, pessoa: pessoa.nome, beneficiarioId: pessoa.id,
     criadaEm: isoDe(new Date()), situacao: 'em-analise',
     anexos: [], historico: [{ quando: new Date().toISOString(), texto: 'Pedido enviado pelo portal.' }],
-    detalhe: `${pessoa.nome.split(' ')[0]} sai do plano em ${formatarData(quando.data)}. A conta muda a partir do mês seguinte.`,
+    detalhe: `${pessoa.nome.split(' ')[0]} sai do plano em ${formatarData(dataSaida)}. A conta muda a partir do mês seguinte.`,
   }
   solicitacoesMock.push(solicitacao)
   return paraCliente(solicitacao)
@@ -432,7 +756,10 @@ export async function anexoDaSolicitacao(usuario: UsuarioPortal, protocolo: stri
 /** Extrato de cobrança de uma conta do usuário logado. */
 export async function obterExtrato(usuario: UsuarioPortal, id: string): Promise<ExtratoFatura> {
   const fatura = await obterFatura(usuario, id)
-  const grupos = emModoMock() ? DETALHE_TESTE : mapearGruposExtrato(await cobrancaNoGateway(id))
+  const grupos = emModoMock()
+    ? DETALHE_TESTE
+    : await Promise.all([cobrancaNoGateway(id), nomesDeProdutoDoContrato(usuario)])
+      .then(([cobranca, nomes]) => mapearGruposExtrato(cobranca, nomes))
   const total = emModoMock()
     ? Math.round(grupos.reduce((soma, g) => soma + g.subtotal, 0) * 100) / 100
     : fatura.valor
@@ -462,8 +789,15 @@ export async function obterPix(usuario: UsuarioPortal, id: string): Promise<Paga
   const fatura = await obterFatura(usuario, id)
   if (fatura.situacao === 'paga') throw createError({ statusCode: 409, message: 'Essa conta já está paga.' })
   if (!emModoMock()) {
-    // O extrato do faturamento não traz o código PIX (emv). Precisa de endpoint próprio.
-    throw createError({ statusCode: 501, message: 'O PIX ainda não está disponível para esta conta. Use o boleto, por favor.' })
+    const nossoNumero = String((await cobrancaNoGateway(id)).nossoNumero ?? '').trim()
+    if (!nossoNumero) throw createError({ statusCode: 404, message: 'O PIX desta conta ainda não foi gerado. Tente mais tarde.' })
+    const estado = await pixDaCobrancaNoGateway(nossoNumero)
+    if (estado.emv) {
+      const copiaECola = String(estado.emv)
+      return { copiaECola, qrCode: await QRCode.toDataURL(copiaECola, { margin: 1, width: 480, color: { dark: '#1d2948', light: '#ffffff' } }) }
+    }
+    // O portal só entrega o PIX que já existe; não pede a geração de um novo.
+    throw createError({ statusCode: 404, message: 'O PIX desta conta ainda não está disponível. Use o boleto, por favor.' })
   }
   const copiaECola = PIX_TESTE
   const qrCode = await QRCode.toDataURL(copiaECola, { margin: 1, width: 480, color: { dark: '#1d2948', light: '#ffffff' } })
@@ -474,11 +808,21 @@ export async function obterBoleto(usuario: UsuarioPortal, id: string): Promise<P
   const fatura = await obterFatura(usuario, id)
   if (fatura.situacao === 'paga') throw createError({ statusCode: 409, message: 'Essa conta já está paga.' })
   if (!emModoMock()) {
-    const linha = (await cobrancaNoGateway(id)).linhaDigitavel
-    if (!linha) throw createError({ statusCode: 404, message: 'O boleto desta conta ainda não foi gerado. Tente mais tarde.' })
-    return { linhaDigitavel: linha, pdfDisponivel: false }
+    const cobranca = await cobrancaNoGateway(id)
+    if (!cobranca.linhaDigitavel) throw createError({ statusCode: 404, message: 'O boleto desta conta ainda não foi gerado. Tente mais tarde.' })
+    return { linhaDigitavel: cobranca.linhaDigitavel, pdfDisponivel: !!String(cobranca.nossoNumero ?? '').trim() }
   }
   return { linhaDigitavel: LINHA_DIGITAVEL_TESTE, pdfDisponivel: false }
+}
+
+/** PDF do boleto de uma conta do usuário logado. A conta é buscada na lista dele; o nosso número nunca vem da tela. */
+export async function baixarBoleto(usuario: UsuarioPortal, id: string): Promise<{ nome: string, conteudo: Buffer }> {
+  const fatura = await obterFatura(usuario, id)
+  if (fatura.situacao === 'paga') throw createError({ statusCode: 409, message: 'Essa conta já está paga.' })
+  if (emModoMock()) throw createError({ statusCode: 404, message: 'O PDF do boleto só existe com o sistema ligado.' })
+  const nossoNumero = String((await cobrancaNoGateway(id)).nossoNumero ?? '').trim()
+  if (!nossoNumero) throw createError({ statusCode: 404, message: 'O boleto desta conta ainda não foi gerado. Tente mais tarde.' })
+  return { nome: 'boleto-' + (fatura.vencimento || nossoNumero) + '.pdf', conteudo: await boletoPdfNoGateway(nossoNumero) }
 }
 
 // ---------------------------------------------------------------- Empresa (responsável)
@@ -493,10 +837,21 @@ function pedidosDaEmpresa(usuario: UsuarioPortal): SolicitacaoMock[] {
   return solicitacoesMock.filter(s => s.contratoId === idContrato(usuario))
 }
 
+/** Família de um titular da empresa (só o responsável). O número do contrato é conferido contra a lista da empresa. */
+export async function familiaDoTitularDaEmpresa(usuario: UsuarioPortal, id: string): Promise<FamiliaDaEmpresa> {
+  exigirRepresentante(usuario)
+  if (!emModoMock()) return mapearFamiliaDaEmpresa(await contratoDeTitularDaEmpresaNoGateway(id))
+  const titular = (await beneficiariosEmpresa(usuario)).titulares.find(t => t.id === id)
+  if (!titular) throw createError({ statusCode: 404, message: 'Não encontramos essa pessoa na sua empresa.' })
+  const { dependentes, totalDependentes: _, ...pessoa } = titular
+  return { titular: pessoa, dependentes, cadastro: cadastroDaFamiliaTeste(id) }
+}
+
 /** Lista completa da empresa, com quem já tem pedido de saída em andamento. */
 export async function beneficiariosEmpresa(usuario: UsuarioPortal): Promise<BeneficiariosEmpresa> {
   exigirRepresentante(usuario)
-  if (!emModoMock()) aindaNaoIntegrado()
+  // Real: só os titulares (rápido); a família de cada um vem ao abrir (familiaDoTitularDaEmpresa).
+  if (!emModoMock()) return mapearTitularesEmpresa(await titularesDaEmpresaNoGateway(), usuario.contrato?.empresa ?? 'empresa')
   const pedidos = pedidosDaEmpresa(usuario).filter(s => solicitacaoEmAberto(s.situacao))
   const saidas = new Map<string, { protocolo: string, data: string }>()
   for (const s of pedidos.filter(p => p.tipo === 'exclusao')) {
@@ -552,6 +907,14 @@ export async function conferirPlanilhaEmpresa(
 ): Promise<ConferenciaPlanilha> {
   exigirRepresentante(usuario)
   const linhas = conferirInclusoes(await lerPlanilha(conteudo), await contextoInclusao(usuario))
+  // O que a regra não libera (ex.: incluir titular) vira problema da linha, para a pessoa corrigir antes de enviar.
+  const liberado = await decisoesDeMovimentacaoDoAtor(usuario)
+  for (const l of linhas) {
+    const tipo: TipoDeMovimentacao = l.parentesco === PARENTESCO_TITULAR ? 'incluir-titular' : 'incluir-dependente'
+    if (!l.erros.length && !liberado.find(d => d.tipo === tipo)?.disponivel) {
+      l.erros.push(tipo === 'incluir-titular' ? 'O seu plano não libera incluir titular por aqui.' : 'O seu plano não libera incluir dependente por aqui.')
+    }
+  }
   const conferencia: ConferenciaPlanilha = {
     id: randomUUID(), arquivo, linhas,
     prontas: linhas.filter(l => !l.erros.length).length,
@@ -596,6 +959,7 @@ export async function incluirPessoaEmpresa(usuario: UsuarioPortal, dados: LinhaI
   exigirRepresentante(usuario)
   const [linha] = conferirInclusoes([{ ...dados, linha: 1 }], await contextoInclusao(usuario))
   if (linha!.erros.length) throw createError({ statusCode: 400, message: linha!.erros[0]! })
+  await exigirMovimentacao(usuario, linha!.parentesco === PARENTESCO_TITULAR ? 'incluir-titular' : 'incluir-dependente')
   const pedido = pedidoDeInclusao(usuario, [linha!], 'Pedido enviado pelo portal')
   solicitacoesMock.push(pedido)
   return paraCliente(pedido)
@@ -616,6 +980,15 @@ export async function excluirPessoasEmpresa(usuario: UsuarioPortal, dados: Dados
     if (marcados.has(t.id)) saindo.push(t, ...t.dependentes.filter(d => d.situacao === 'ativo'))
     else saindo.push(...t.dependentes.filter(d => marcados.has(d.id)))
   }
+  // Titular marcado exige "excluir titular"; dependente marcado sozinho exige "excluir dependente".
+  const decisoesSaida = await decisoesDeMovimentacaoDoAtor(usuario)
+  const liberaSaida = (t: TipoDeMovimentacao) => !!decisoesSaida.find(d => d.tipo === t)?.disponivel
+  for (const t of empresa.titulares) {
+    if (marcados.has(t.id)) { if (!liberaSaida('excluir-titular')) throw createError({ statusCode: 403, message: 'O seu plano não libera tirar titular por aqui. Fale com a gente.' }) }
+    else if (t.dependentes.some(d => marcados.has(d.id)) && !liberaSaida('excluir-dependente')) {
+      throw createError({ statusCode: 403, message: 'O seu plano não libera tirar dependente por aqui. Fale com a gente.' })
+    }
+  }
   if ([...marcados].some(id => !conhecidos.has(id))) {
     throw createError({ statusCode: 400, message: 'Alguma pessoa marcada não está no plano. Atualize a página e marque de novo.' })
   }
@@ -626,15 +999,17 @@ export async function excluirPessoasEmpresa(usuario: UsuarioPortal, dados: Dados
   if (!opcoes.motivosExclusao.some(m => m.id === dados.motivo)) throw createError({ statusCode: 400, message: 'Escolha o motivo da saída.' })
   const quando = opcoes.quandoExcluir.find(q => q.id === dados.quando)
   if (!quando) throw createError({ statusCode: 400, message: 'Escolha a partir de quando.' })
+  const dataSaida = dataDaSaida(quando, dados.data)
   if (!dados.aceite) throw createError({ statusCode: 400, message: 'Confirme que você entendeu para enviar.' })
+  semProtocoloNoSistemaReal()
 
   const um = saindo.length === 1 ? saindo[0] : undefined
   const pedido: SolicitacaoMock = {
     contratoId: idContrato(usuario), protocolo: novoProtocolo(), categoria: 'movimentacao', tipo: 'exclusao',
     titulo: um ? `Tirar ${um.nome} do plano` : `Tirar ${saindo.length} pessoas do plano`,
-    pessoa: um?.nome, beneficiarioId: um?.id, beneficiarioIds: saindo.map(p => p.id), dataSaida: quando.data,
+    pessoa: um?.nome, beneficiarioId: um?.id, beneficiarioIds: saindo.map(p => p.id), dataSaida,
     criadaEm: isoDe(new Date()), situacao: 'em-analise', anexos: [],
-    detalhe: `Saída do plano em ${formatarData(quando.data)}. A conta da empresa muda a partir do mês seguinte.`,
+    detalhe: `Saída do plano em ${formatarData(dataSaida)}. A conta da empresa muda a partir do mês seguinte.`,
     historico: [{ quando: new Date().toISOString(), texto: 'Pedido enviado pelo portal.' }],
     pessoasLote: um ? undefined : saindo.map(p => ({ nome: p.nome, parentesco: p.parentesco, situacao: 'em-analise' as const })),
   }

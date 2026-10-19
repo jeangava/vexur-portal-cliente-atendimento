@@ -22,6 +22,12 @@ describe('cpf', () => {
     expect(problemaNoCpf('52998224724')).toMatch(/não parece certo/)
     expect(problemaNoCpf('52998224725')).toBeNull()
   })
+
+  it('no ambiente de integração aceita CPF fictício (dígitos inválidos), mas exige 11 números', () => {
+    expect(problemaNoCpf('52998224724', { conferirDigitos: false })).toBeNull()
+    expect(problemaNoCpf('529982247', { conferirDigitos: false })).toBe('O CPF tem 11 números. Você digitou 9.')
+    expect(problemaNoCpf('', { conferirDigitos: false })).toBe('Digite o seu CPF para continuar.')
+  })
 })
 
 describe('formato', () => {

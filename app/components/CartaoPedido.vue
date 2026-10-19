@@ -4,7 +4,7 @@ import type { Solicitacao } from '#shared/types/portal'
 /** `de` = tela de origem, para o "Voltar" do detalhe levar de volta ao lugar certo. */
 const props = defineProps<{ pedido: Solicitacao, de?: 'movimentacao' }>()
 const situacao = computed(() => SITUACAO_SOLICITACAO[props.pedido.situacao])
-const CATEGORIA = { movimentacao: 'Movimentação', servico: 'Serviço', atendimento: 'Atendimento' } as const
+const CATEGORIA = { movimentacao: 'Movimentação', servico: 'Serviço', atendimento: 'Atendimento', cadastro: 'Dados cadastrais' } as const
 </script>
 
 <template>

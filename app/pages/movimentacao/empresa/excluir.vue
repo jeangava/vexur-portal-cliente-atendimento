@@ -1,19 +1,28 @@
 <script setup lang="ts">
-import type { BeneficiariosEmpresa, OpcoesMovimentacao, PessoaEmpresa, Solicitacao } from '#shared/types/portal'
+import type { BeneficiariosEmpresa, DecisaoDeMovimentacao, OpcoesMovimentacao, PessoaEmpresa, Solicitacao } from '#shared/types/portal'
 
 definePageMeta({ layout: 'portal' })
 useHead({ title: 'Tirar do plano · Portal do Cliente' })
 
 const PASSOS = ['Quem vai sair', 'Motivo e data', 'Confirmar']
-const [{ data: empresa, error }, { data: opcoes }] = await Promise.all([
+const [{ data: empresa, error }, { data: opcoes }, { data: regras }] = await Promise.all([
   useFetch<BeneficiariosEmpresa>('/api/empresa/beneficiarios'),
   useFetch<OpcoesMovimentacao>('/api/movimentacao/opcoes'),
+  useFetch<DecisaoDeMovimentacao[]>('/api/movimentacao/regras', { default: () => [] }),
 ])
+// O que a regra do plano libera: titular e dependente são liberados separadamente.
+const libera = (tipo: DecisaoDeMovimentacao['tipo']) => (regras.value ?? []).some(d => d.tipo === tipo && d.disponivel)
+const podeTirarTitular = computed(() => libera('excluir-titular'))
+const podeTirarDependente = computed(() => libera('excluir-dependente'))
 
 const passo = ref(1)
 const selecionados = ref<string[]>([])
+const carregadas = ref<Record<string, PessoaEmpresa[]>>({})
 const motivo = ref('')
 const quando = ref('')
+const dataEscolhida = ref('')
+const hojeIso = new Date().toISOString().slice(0, 10)
+const maximoIso = new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10)
 const aceite = ref(false)
 const erro = ref('')
 const enviando = ref(false)
@@ -24,12 +33,20 @@ const saindo = computed(() => {
   const marcados = new Set(selecionados.value)
   const lista: (PessoaEmpresa & { junto?: boolean })[] = []
   for (const t of empresa.value?.titulares ?? []) {
-    if (marcados.has(t.id)) lista.push(t, ...t.dependentes.filter(d => d.situacao === 'ativo').map(d => ({ ...d, junto: true })))
-    else lista.push(...t.dependentes.filter(d => marcados.has(d.id)))
+    // Lista sob demanda: os dependentes só chegam quando a família é aberta.
+    const dependentes = t.dependentes.length ? t.dependentes : carregadas.value[t.id] ?? []
+    if (marcados.has(t.id)) lista.push(t, ...dependentes.filter(d => d.situacao === 'ativo').map(d => ({ ...d, junto: true })))
+    else lista.push(...dependentes.filter(d => marcados.has(d.id)))
   }
   return lista
 })
 const opcaoQuando = computed(() => opcoes.value?.quandoExcluir.find(q => q.id === quando.value))
+// Vem marcado "no fim do mês"; as outras datas ficam atrás de um botão.
+const outrasDatas = ref(false)
+const quandoVisiveis = computed(() => (outrasDatas.value ? opcoes.value?.quandoExcluir : opcoes.value?.quandoExcluir.filter(q => q.id === 'fim-do-mes')) ?? [])
+watch(opcoes, (o) => { if (!quando.value && o?.quandoExcluir.some(q => q.id === 'fim-do-mes')) quando.value = 'fim-do-mes' }, { immediate: true })
+/** A data da saída: a da opção pronta ou a que a pessoa escolheu. */
+const dataDaSaida = computed(() => (opcaoQuando.value?.escolheData ? dataEscolhida.value : opcaoQuando.value?.data) ?? '')
 const motivoRotulo = computed(() => opcoes.value?.motivosExclusao.find(m => m.id === motivo.value)?.rotulo ?? '')
 const textoQtd = computed(() => (saindo.value.length === 1 ? '1 pessoa' : `${saindo.value.length} pessoas`))
 
@@ -39,6 +56,10 @@ function avancar() {
   if (passo.value === 1 && !saindo.value.length) { erro.value = 'Marque quem vai sair do plano.'; return }
   if (passo.value === 2 && !motivo.value) { erro.value = 'Escolha o motivo.'; return }
   if (passo.value === 2 && !quando.value) { erro.value = 'Escolha a partir de quando.'; return }
+  if (passo.value === 2 && opcaoQuando.value?.escolheData && (!dataEscolhida.value || dataEscolhida.value < hojeIso || dataEscolhida.value > maximoIso)) {
+    erro.value = 'Escolha uma data entre hoje e o próximo ano.'
+    return
+  }
   passo.value++
   window.scrollTo({ top: 0 })
 }
@@ -48,7 +69,7 @@ async function enviar() {
   enviando.value = true
   try {
     pronto.value = await $fetch<Solicitacao>('/api/empresa/exclusao', {
-      method: 'POST', body: { pessoas: selecionados.value, motivo: motivo.value, quando: quando.value, aceite: aceite.value },
+      method: 'POST', body: { pessoas: selecionados.value, motivo: motivo.value, quando: quando.value, data: opcaoQuando.value?.escolheData ? dataEscolhida.value : undefined, aceite: aceite.value },
     })
   } catch (e) {
     erro.value = mensagemDeErro(e)
@@ -89,7 +110,7 @@ async function enviar() {
           <p class="m-0 text-lg text-texto">
             Procure e marque quem vai sair. Ao marcar um <b>titular</b>, os dependentes dele saem junto.
           </p>
-          <ListaEmpresa v-model:selecionados="selecionados" :empresa="empresa" selecionavel />
+          <ListaEmpresa v-model:selecionados="selecionados" v-model:carregadas="carregadas":empresa="empresa" selecionavel situacao-inicial="ativos" :permite-tirar-titular="podeTirarTitular" :permite-tirar-dependente="podeTirarDependente" />
         </section>
 
         <section v-else-if="passo === 2" class="flex flex-col gap-6 rounded-3xl bg-white p-5 shadow-cartao sm:p-7">
@@ -103,7 +124,21 @@ async function enviar() {
           </fieldset>
           <fieldset class="m-0 flex flex-col gap-3 border-0 p-0">
             <legend class="mb-3 text-xl font-bold">A partir de quando?</legend>
-            <OpcaoGrande v-for="q in opcoes.quandoExcluir" :key="q.id" v-model="quando" nome="quando" :valor="q.id" :rotulo="q.rotulo" :apoio="q.apoio" />
+            <OpcaoGrande v-for="q in quandoVisiveis" :key="q.id" v-model="quando" nome="quando" :valor="q.id" :rotulo="q.rotulo" :apoio="q.apoio" />
+            <button
+              v-if="!outrasDatas && opcoes.quandoExcluir.length > 1" type="button"
+              class="self-start rounded-xl px-2 py-2 text-base font-semibold text-roxo-escuro underline"
+              @click="outrasDatas = true"
+            >
+              Precisa de outra data?
+            </button>
+            <div v-if="opcaoQuando?.escolheData" class="flex flex-col gap-1.5 rounded-2xl bg-fundo p-4">
+              <label for="data-saida" class="text-[17px] font-bold">Dia em que sai do plano</label>
+              <input
+                id="data-saida" v-model="dataEscolhida" type="date" :min="hojeIso" :max="maximoIso"
+                class="h-14 rounded-2xl border-2 border-campo bg-white px-4 text-lg text-tinta focus:border-roxo"
+              >
+            </div>
           </fieldset>
           <MensagemErro :texto="erro" />
           <BotaoPrincipal @click="avancar">Continuar <Icone nome="seta" :tamanho="22" :espessura="2.4" /></BotaoPrincipal>
@@ -114,7 +149,7 @@ async function enviar() {
           <dl class="m-0 grid gap-3 sm:grid-cols-3">
             <div class="rounded-2xl bg-fundo p-3.5"><dt class="text-sm font-semibold text-apoio">Quantas pessoas</dt><dd class="m-0 text-[17px] font-bold">{{ textoQtd }}</dd></div>
             <div class="rounded-2xl bg-fundo p-3.5"><dt class="text-sm font-semibold text-apoio">Motivo</dt><dd class="m-0 text-[17px] font-bold">{{ motivoRotulo }}</dd></div>
-            <div class="rounded-2xl bg-fundo p-3.5"><dt class="text-sm font-semibold text-apoio">Saem do plano em</dt><dd class="m-0 text-[17px] font-bold">{{ opcaoQuando ? formatarData(opcaoQuando.data) : '' }}</dd></div>
+            <div class="rounded-2xl bg-fundo p-3.5"><dt class="text-sm font-semibold text-apoio">Saem do plano em</dt><dd class="m-0 text-[17px] font-bold">{{ dataDaSaida ? formatarData(dataDaSaida) : '' }}</dd></div>
           </dl>
           <div>
             <h3 class="m-0 mb-2 text-base font-bold text-texto">Quem sai</h3>

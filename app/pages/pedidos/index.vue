@@ -12,6 +12,7 @@ const FILTROS: { id: Filtro, rotulo: string }[] = [
   { id: 'movimentacao', rotulo: 'Movimentação' },
   { id: 'servico', rotulo: 'Serviços' },
   { id: 'atendimento', rotulo: 'Atendimento' },
+  { id: 'cadastro', rotulo: 'Dados cadastrais' },
 ]
 const filtro = ref<Filtro>('todos')
 

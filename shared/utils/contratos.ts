@@ -16,10 +16,12 @@ export function acessoDoContrato(contrato: ContratoCliente): AcessoPortal {
   if (contrato.tipo === 'empresarial' && contrato.papel === 'titular') {
     return { areas: ['familia', 'comunicados', 'pedidos'], mostrarValores: false }
   }
+  // Os dados da empresa são só do responsável.
+  const daEmpresa: AreaPortal[] = contrato.papel === 'representante' ? ['empresa'] : []
   if (contrato.situacao === 'cancelado') {
-    return { areas: TODAS_AS_AREAS.filter(a => a !== 'movimentacao'), mostrarValores: true }
+    return { areas: [...TODAS_AS_AREAS.filter(a => a !== 'movimentacao'), ...daEmpresa], mostrarValores: true }
   }
-  return { areas: [...TODAS_AS_AREAS], mostrarValores: true }
+  return { areas: [...TODAS_AS_AREAS, ...daEmpresa], mostrarValores: true }
 }
 
 /** Ativos primeiro (mais novos antes); depois os cancelados, do que terminou por último ao mais antigo. */
@@ -31,18 +33,28 @@ export function ordenarContratos(contratos: ContratoCliente[]): ContratoCliente[
   })
 }
 
+function nomeDaEmpresa(nome: string | undefined): string {
+  return String(nome ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase()
+}
+
 /**
- * Responsável pela empresa que também é titular no mesmo contrato: fica só a visão de responsável
- * (ela já mostra tudo). A visão de titular de empresarial é só para quem não é o responsável.
+ * Responsável pela empresa que também é titular nela (mesmo contrato ou mesma empresa): fica só a
+ * visão de responsável (ela já mostra tudo). A visão de titular de empresarial é só para quem não é o responsável.
  */
 export function simplificarContratos(contratos: ContratoCliente[]): ContratoCliente[] {
-  const responsavelPor = new Set(contratos.filter(c => c.papel === 'representante').map(c => c.numero))
-  return contratos.filter(c => c.papel === 'representante' || c.tipo !== 'empresarial' || !responsavelPor.has(c.numero))
+  const representante = contratos.filter(c => c.papel === 'representante')
+  const numeros = new Set(representante.flatMap(c => [c.numero, c.contratoEmpresa ?? c.numero]))
+  const empresas = new Set(representante.map(c => nomeDaEmpresa(c.empresa)).filter(Boolean))
+  const daMesmaEmpresa = (c: ContratoCliente) => numeros.has(c.numero)
+    || (!!c.contratoEmpresa && numeros.has(c.contratoEmpresa))
+    || empresas.has(nomeDaEmpresa(c.empresa))
+  return contratos.filter(c => c.papel === 'representante' || c.tipo !== 'empresarial' || !daMesmaEmpresa(c))
 }
 
 /**
  * Só entra direto quando o CPF tem um contrato só (ativo ou cancelado).
- * Com mais de um, sempre pergunta — mesmo que só um esteja ativo.
+ * Com mais de um, sempre pergunta. O responsável que também é titular na MESMA empresa
+ * já virou um contrato só em simplificarContratos.
  */
 export function contratoAutomatico(contratos: ContratoCliente[]): ContratoCliente | undefined {
   return contratos.length === 1 ? contratos[0] : undefined
@@ -71,6 +83,7 @@ const AREA_POR_ROTA: [string, AreaPortal][] = [
   ['/familia', 'familia'],
   ['/movimentacao', 'movimentacao'],
   ['/pedidos', 'pedidos'],
+  ['/empresa', 'empresa'],
 ]
 
 /** Área do portal de uma rota da tela (undefined = livre para todos, ex.: Início e Ajuda). */

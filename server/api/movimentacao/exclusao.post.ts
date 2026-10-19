@@ -7,6 +7,7 @@ export default defineEventHandler(async (event) => {
     beneficiario: String(corpo?.beneficiario ?? ''),
     motivo: String(corpo?.motivo ?? ''),
     quando: String(corpo?.quando ?? ''),
+    data: String(corpo?.data ?? ''),
     aceite: corpo?.aceite === true,
   })
 })

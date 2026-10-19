@@ -3,7 +3,15 @@ definePageMeta({ layout: 'portal' })
 useHead({ title: 'Serviços · Portal do Cliente' })
 
 const { data: regras, error } = await useFetch('/api/servicos')
-const servicos = computed(() => SERVICOS.map(s => ({ ...s, regra: regras.value?.find(r => r.id === s.id) })))
+// Só os serviços autorizados para o contrato (os conhecidos, na ordem do portal, e depois os demais comunicados).
+const servicos = computed(() => {
+  const lista = (regras.value ?? []).filter(r => !r.oculto)
+  const conhecidos = SERVICOS.flatMap((s) => { const regra = lista.find(r => r.id === s.id); return regra ? [{ ...s, regra }] : [] })
+  const outros = lista.filter(r => !buscarServico(r.id)).map(r => ({
+    id: r.id, titulo: r.titulo ?? 'Documento', apoio: 'Documento do seu contrato', icone: 'documento', cor: 'bg-roxo-claro text-roxo-icone', regra: r,
+  }))
+  return [...conhecidos, ...outros]
+})
 </script>
 
 <template>
@@ -16,9 +24,11 @@ const servicos = computed(() => SERVICOS.map(s => ({ ...s, regra: regras.value?.
 
     <MensagemErro v-if="error" :texto="mensagemDeErro(error, 'Não conseguimos carregar os serviços agora.')" />
 
+    <p v-if="regras && !servicos.length" class="m-0 rounded-[22px] bg-white p-5 text-lg text-texto shadow-cartao">Nenhum serviço está disponível para o seu contrato.</p>
+
     <div class="grid gap-3.5 md:grid-cols-2 lg:grid-cols-3 lg:gap-5">
       <NuxtLink
-        v-for="s in servicos" :key="s.id" :to="`/servicos/${s.id}`"
+        v-for="s in servicos" :key="s.id" :to="s.id === 'extrato' || s.id === 'sv-extrato-de-cobranca' ? '/contas' : `/servicos/${s.id}`"
         class="flex min-h-[112px] items-center gap-4 rounded-[22px] bg-white p-[18px] text-tinta no-underline shadow-cartao transition-shadow hover:shadow-[0_10px_30px_#353d681c] lg:min-h-[190px] lg:flex-col lg:items-start lg:justify-between lg:p-6"
       >
         <span class="flex size-[58px] shrink-0 items-center justify-center rounded-[18px]" :class="s.cor">

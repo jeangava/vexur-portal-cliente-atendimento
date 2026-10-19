@@ -6,6 +6,7 @@ useHead({ title: 'Início · Portal do Cliente' })
 
 const usuario = useUsuario()
 const sair = useSair()
+const seletor = useSeletorContratos()
 const pode = (area: AreaPortal) => !!usuario.value?.acesso.areas.includes(area)
 const contrato = computed(() => usuario.value?.contrato)
 const [{ data: faturas, error }, { data: comunicados }, { data: pedidos }] = await Promise.all([
@@ -45,13 +46,14 @@ const atalhos = computed(() => TODOS_ATALHOS.filter(a => pode(a.area)).slice(0, 
         <div class="text-[15px] text-apoio lg:text-[17px]">
           {{ usuario?.plano }}<template v-if="contrato?.empresa"> · {{ contrato.empresa }}</template>
         </div>
-        <NuxtLink
-          v-if="usuario?.podeTrocarContrato" to="/escolher-plano"
-          class="mt-0.5 inline-flex min-h-10 items-center gap-1.5 text-base font-bold text-roxo-escuro underline underline-offset-4 lg:hidden"
+        <button
+          v-if="usuario?.podeTrocarContrato" type="button"
+          class="mt-0.5 inline-flex min-h-10 items-center gap-1.5 bg-transparent p-0 text-base font-bold text-roxo-escuro underline underline-offset-4 lg:hidden"
+          @click="seletor = true"
         >
           <Icone nome="trocar" :tamanho="18" />
-          Trocar de plano
-        </NuxtLink>
+          Ver outro contrato
+        </button>
       </div>
       <button
         type="button" aria-label="Sair do portal"

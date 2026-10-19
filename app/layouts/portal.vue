@@ -2,6 +2,7 @@
 const route = useRoute()
 const usuario = useUsuario()
 const sair = useSair()
+const seletor = useSeletorContratos()
 
 type Item = { to: string, rotulo: string, rotuloLongo?: string, icone: string, noCelular: boolean, ativo: (p: string) => boolean }
 const itens: Item[] = [
@@ -12,6 +13,7 @@ const itens: Item[] = [
   { to: '/familia', rotulo: 'Família', rotuloLongo: 'Minha família', icone: 'familia', noCelular: true, ativo: p => p === '/familia' },
   { to: '/movimentacao', rotulo: 'Movimentação', icone: 'lista', noCelular: false, ativo: p => p.startsWith('/movimentacao') },
   { to: '/pedidos', rotulo: 'Pedidos', rotuloLongo: 'Meus pedidos', icone: 'relogio', noCelular: false, ativo: p => p.startsWith('/pedidos') },
+  { to: '/empresa', rotulo: 'Empresa', rotuloLongo: 'Minha empresa', icone: 'empresa', noCelular: false, ativo: p => p.startsWith('/empresa') },
   { to: '/ajuda', rotulo: 'Ajuda', icone: 'conversa', noCelular: true, ativo: p => p === '/ajuda' },
 ]
 
@@ -59,13 +61,14 @@ const itensCelular = computed(() => {
 
     <div class="grow" />
 
-    <NuxtLink
-      v-if="usuario?.podeTrocarContrato" to="/escolher-plano"
-      class="-mb-5 flex min-h-12 items-center gap-2.5 rounded-2xl px-4 text-base font-bold text-roxo-escuro no-underline hover:bg-fundo"
+    <button
+      v-if="usuario?.podeTrocarContrato" type="button"
+      class="-mb-5 flex min-h-12 items-center gap-2.5 rounded-2xl bg-transparent px-4 text-left text-base font-bold text-roxo-escuro hover:bg-fundo"
+      @click="seletor = true"
     >
       <Icone nome="trocar" :tamanho="22" />
-      Trocar de plano
-    </NuxtLink>
+      Ver outro contrato
+    </button>
 
     <div class="flex items-center gap-3 rounded-2xl bg-fundo p-3">
       <span aria-hidden="true" class="flex size-11 shrink-0 items-center justify-center rounded-full bg-roxo font-display text-lg font-extrabold text-white">
@@ -85,8 +88,16 @@ const itensCelular = computed(() => {
     </div>
   </aside>
 
+  <ModalContratos v-if="usuario?.podeTrocarContrato" />
+
   <div class="lg:pl-[264px] print:pl-0">
     <div class="mx-auto w-full max-w-[1120px] pb-[100px] lg:pb-12 print:max-w-none print:pb-0">
+      <p
+        v-if="usuario?.contrato?.situacao === 'cancelado'" role="status"
+        class="m-0 flex items-center gap-2.5 bg-atencao-claro px-6 py-3 text-base font-bold text-atencao lg:mx-10 lg:mt-6 lg:rounded-2xl print:hidden"
+      >
+        Plano encerrado em {{ formatarData(usuario.contrato.fimVigencia ?? '') }}. Aqui você só consulta: não dá para fazer movimentações.
+      </p>
       <slot />
     </div>
   </div>

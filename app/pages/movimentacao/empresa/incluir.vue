@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import type { BeneficiariosEmpresa, ConferenciaPlanilha, Solicitacao, TitularEmpresa } from '#shared/types/portal'
+import type { BeneficiariosEmpresa, ConferenciaPlanilha, DecisaoDeMovimentacao, Solicitacao, TitularEmpresa } from '#shared/types/portal'
 
 definePageMeta({ layout: 'portal' })
 useHead({ title: 'Incluir pessoas · Portal do Cliente' })
 
 const { data: empresa, error } = await useFetch<BeneficiariosEmpresa>('/api/empresa/beneficiarios')
+const { data: regras } = await useFetch<DecisaoDeMovimentacao[]>('/api/movimentacao/regras', { default: () => [] })
+const libera = (tipo: DecisaoDeMovimentacao['tipo']) => (regras.value ?? []).some(d => d.tipo === tipo && d.disponivel)
+const podeTitular = computed(() => libera('incluir-titular'))
+const podeDependente = computed(() => libera('incluir-dependente'))
 
 const modo = ref<'' | 'uma' | 'planilha'>('')
 const pronto = ref<Solicitacao | null>(null)
@@ -169,8 +173,16 @@ function pessoas(n: number) {
         <fieldset class="m-0 flex flex-col gap-3 border-0 p-0">
           <legend class="mb-3 text-xl font-bold">Quem vai entrar no plano?</legend>
           <div class="grid gap-3 sm:grid-cols-2">
-            <OpcaoGrande v-model="quem" nome="quem" valor="titular" rotulo="Um funcionário" apoio="Ele será o titular" />
-            <OpcaoGrande v-model="quem" nome="quem" valor="dependente" rotulo="Dependente de um funcionário" apoio="Cônjuge, filho(a)…" />
+            <OpcaoGrande v-if="podeTitular" v-model="quem" nome="quem" valor="titular" rotulo="Um funcionário" apoio="Ele será o titular" />
+            <div v-else class="flex min-h-[76px] cursor-not-allowed flex-col justify-center rounded-[22px] bg-fundo px-5 py-3 opacity-70" aria-disabled="true">
+              <span class="text-[18px] font-bold text-apoio">Um funcionário</span>
+              <span class="text-[15px] text-apoio">Não liberado para o seu plano. Fale com a gente.</span>
+            </div>
+            <OpcaoGrande v-if="podeDependente" v-model="quem" nome="quem" valor="dependente" rotulo="Dependente de um funcionário" apoio="Cônjuge, filho(a)…" />
+            <div v-else class="flex min-h-[76px] cursor-not-allowed flex-col justify-center rounded-[22px] bg-fundo px-5 py-3 opacity-70" aria-disabled="true">
+              <span class="text-[18px] font-bold text-apoio">Dependente de um funcionário</span>
+              <span class="text-[15px] text-apoio">Não liberado para o seu plano. Fale com a gente.</span>
+            </div>
           </div>
         </fieldset>
 

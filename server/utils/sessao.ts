@@ -62,6 +62,14 @@ function senhaDaSessao(): string {
   return senhaDeDesenvolvimento()
 }
 
+/**
+ * No acesso (login / senha nova), confere os dígitos do CPF, exceto no ambiente de
+ * integração (NUXT_LOGIN_SOMENTE_CPF=true), cuja massa de teste tem CPFs fictícios.
+ */
+export function conferirDigitosNoAcesso(): boolean {
+  return String(useRuntimeConfig().loginSomenteCpf) !== 'true'
+}
+
 /** Sessão guardada em cookie criptografado e HttpOnly: o navegador não consegue ler. */
 export function usarSessao(event: H3Event) {
   return useSession<DadosSessao>(event, {
@@ -84,7 +92,10 @@ export async function exigirUsuario(event: H3Event): Promise<UsuarioPortal> {
   if (!sessao.data.usuario.contrato) {
     throw createError({ statusCode: 403, message: 'Escolha qual plano você quer ver.' })
   }
-  return sessao.data.usuario
+  // As regras de acesso são sempre recalculadas do contrato: uma regra nova vale na hora, sem entrar de novo.
+  const usuario = sessao.data.usuario
+  const contrato = usuario.contrato
+  return { ...usuario, acesso: contrato ? acessoDoContrato(contrato) : usuario.acesso }
 }
 
 /**

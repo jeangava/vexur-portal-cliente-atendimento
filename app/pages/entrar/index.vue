@@ -41,7 +41,16 @@ watch(senha, (valor) => {
 })
 
 async function entrar() {
-  erroCpf.value = problemaNoCpf(cpf.value) ?? ''
+  // Preenchimento automático do navegador e "colar" nem sempre disparam o evento de digitar:
+  // lê o que está no campo e põe a máscara antes de conferir.
+  const campo = document.getElementById('cpf') as HTMLInputElement | null
+  if (campo) {
+    cpf.value = formatarCpf(campo.value)
+    campo.value = cpf.value
+    cpfDigitado.value = cpf.value
+  }
+  // No ambiente de integração a massa de teste tem CPFs fictícios: não confere os dígitos.
+  erroCpf.value = problemaNoCpf(cpf.value, { conferirDigitos: !loginSomenteCpf }) ?? ''
   erroSenha.value = senha.value ? '' : 'Digite a sua senha.'
   if (erroCpf.value || erroSenha.value) return
 
@@ -83,7 +92,7 @@ async function entrar() {
           maxlength="14" :aria-invalid="!!erroCpf" :aria-describedby="erroCpf ? 'cpf-erro' : 'cpf-ajuda'"
           class="h-16 rounded-2xl border-2 bg-white px-5 text-2xl font-semibold tracking-wide text-tinta placeholder:text-[#8a91a8] focus:border-roxo"
           :class="erroCpf ? 'border-erro' : 'border-campo'"
-          @input="aoDigitarCpf"
+          @input="aoDigitarCpf" @change="aoDigitarCpf" @blur="aoDigitarCpf"
         >
         <MensagemErro id="cpf-erro" :texto="erroCpf" />
         <p v-if="!erroCpf" id="cpf-ajuda" class="m-0 text-[15px] text-apoio">Só os números. Nós colocamos os pontos para você.</p>

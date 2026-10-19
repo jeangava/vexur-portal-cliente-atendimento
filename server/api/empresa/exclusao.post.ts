@@ -8,6 +8,7 @@ export default defineEventHandler(async (event) => {
     pessoas: Array.isArray(corpo?.pessoas) ? corpo.pessoas.slice(0, 2000).map(String) : [],
     motivo: String(corpo?.motivo ?? ''),
     quando: String(corpo?.quando ?? ''),
+    data: String(corpo?.data ?? ''),
     aceite: corpo?.aceite === true,
   })
 })

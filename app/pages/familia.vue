@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BeneficiariosEmpresa, MinhaFamilia } from '#shared/types/portal'
+import type { BeneficiariosEmpresa, CadastroDoContrato, MinhaFamilia } from '#shared/types/portal'
 
 definePageMeta({ layout: 'portal' })
 
@@ -8,10 +8,13 @@ const usuario = useUsuario()
 const responsavel = computed(() => usuario.value?.contrato?.papel === 'representante')
 useHead({ title: responsavel.value ? 'Beneficiários · Portal do Cliente' : 'Minha família · Portal do Cliente' })
 
-const [{ data: familia, error }, { data: empresa, error: erroEmpresa }] = await Promise.all([
+const [{ data: familia, error }, { data: empresa, error: erroEmpresa }, { data: cadastro }] = await Promise.all([
   useFetch<MinhaFamilia>('/api/familia', { immediate: !responsavel.value }),
   useFetch<BeneficiariosEmpresa>('/api/empresa/beneficiarios', { immediate: responsavel.value }),
+  useFetch<CadastroDoContrato>('/api/cadastro', { immediate: !responsavel.value }),
 ])
+const grupoAberto = ref(false)
+const podeAlterar = computed(() => !!usuario.value?.acesso.areas.includes('movimentacao'))
 const podeMovimentar = computed(() => !!usuario.value?.acesso.areas.includes('movimentacao'))
 </script>
 
@@ -23,7 +26,7 @@ const podeMovimentar = computed(() => !!usuario.value?.acesso.areas.includes('mo
         <h1 class="m-0 font-display text-[30px] leading-[1.15] font-extrabold lg:text-[34px]">Beneficiários</h1>
         <p class="m-0 text-lg text-texto">Todas as pessoas no plano da {{ empresa?.empresa ?? 'empresa' }}, com o número da carteirinha.</p>
       </div>
-      <div class="md:w-[300px] md:shrink-0">
+      <div v-if="podeMovimentar" class="md:w-[300px] md:shrink-0">
         <BotaoPrincipal to="/movimentacao"><Icone nome="lista" :tamanho="22" /> Incluir ou tirar pessoas</BotaoPrincipal>
       </div>
     </div>
@@ -54,6 +57,13 @@ const podeMovimentar = computed(() => !!usuario.value?.acesso.areas.includes('mo
     <div class="flex flex-col gap-1.5">
       <h1 class="m-0 font-display text-[30px] leading-[1.15] font-extrabold lg:text-[34px]">Minha família</h1>
       <p class="m-0 text-lg text-texto">Quem está no plano, o que cada um tem e o número da carteirinha para mostrar no atendimento.</p>
+      <button
+        v-if="familia" type="button"
+        class="mt-1.5 inline-flex min-h-12 items-center gap-2 self-start rounded-2xl bg-white px-4 text-[17px] font-bold text-roxo-escuro shadow-leve"
+        @click="grupoAberto = true"
+      >
+        <Icone nome="familia" :tamanho="22" /> Ver grupo familiar e dados
+      </button>
     </div>
 
     <MensagemErro v-if="error" :texto="mensagemDeErro(error, 'Não conseguimos carregar os dados da sua família agora.')" />
@@ -74,6 +84,11 @@ const podeMovimentar = computed(() => !!usuario.value?.acesso.areas.includes('mo
         <p v-else class="m-0 rounded-[22px] bg-white p-5 text-lg text-texto shadow-cartao">Você não tem dependentes no plano.</p>
       </section>
 
+      <section v-if="cadastro && (cadastro.contatos.length || cadastro.enderecos.length || cadastro.pagamento.length || cadastro.responsaveis.length)" class="flex flex-col gap-3">
+        <h2 class="m-0 text-lg font-bold text-texto">Meus dados de contrato</h2>
+        <BlocoCadastro :contatos="cadastro.contatos" :enderecos="cadastro.enderecos" :pagamento="cadastro.pagamento" :responsaveis="cadastro.responsaveis" class="xl:max-w-[720px]" />
+      </section>
+
       <NuxtLink
         v-if="podeMovimentar" to="/movimentacao"
         class="flex min-h-[76px] items-center gap-3.5 rounded-[22px] border-2 border-roxo-borda bg-roxo-fundo px-[18px] py-3.5 text-tinta no-underline md:max-w-[520px]"
@@ -86,5 +101,6 @@ const podeMovimentar = computed(() => !!usuario.value?.acesso.areas.includes('mo
         <Icone nome="avancar" :tamanho="22" :espessura="2.4" class="text-roxo-icone" />
       </NuxtLink>
     </template>
+    <ModalGrupoFamiliar v-if="familia" v-model="grupoAberto" :familia="familia" :cadastro="cadastro ?? null" :pode-alterar="podeAlterar" />
   </main>
 </template>

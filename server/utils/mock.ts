@@ -1,6 +1,7 @@
+import type { LinhaDaRegraServicosOnline } from '../../shared/utils/regraServicosOnline'
 import type {
   Comunicado, ConferenciaPlanilha, ContratoCliente, Fatura, GrupoExtrato, MinhaFamilia, OpcaoParentesco, OpcaoSimples,
-  PerguntaDps, PessoaEmpresa, SituacaoFatura, Solicitacao, TitularEmpresa,
+  CadastroDaEmpresa, CadastroDoContrato, EnderecoDoCep, PerguntaDps, PessoaEmpresa, SituacaoFatura, Solicitacao, TitularEmpresa,
 } from '#shared/types/portal'
 
 /** Senhas de teste aceitas no modo mock (documentadas no README). */
@@ -203,6 +204,11 @@ function montarEmpresaTeste(): TitularEmpresa[] {
       titular.dependentes.forEach(d => cancelar(d, fim))
     } else if (titular.dependentes.length > 1 && i % 4 === 1) {
       cancelar(titular.dependentes.at(-1)!, fim)
+    }
+    // Alguns ativos suspensos, para a tela mostrar o filtro "Suspensos".
+    if (titular.situacao === 'ativo' && i % 13 === 5) {
+      titular.suspenso = true
+      titular.dependentes.forEach((d) => { if (d.situacao === 'ativo') d.suspenso = true })
     }
     lista.push(titular)
   }
@@ -595,3 +601,82 @@ export const PIX_TESTE = '00020126360014BR.GOV.BCB.PIX0114+550000000000052040000
   '5802BR5920PORTAL TESTE VEXUR6009SAO PAULO62070503***6304ABCD'
 
 export const LINHA_DIGITAVEL_TESTE = '00000.00000 00000.000000 00000.000000 0 00000000000000'
+
+/** Dados cadastrais de teste (titular) e da empresa de teste (responsável). Tudo fictício. */
+export const CADASTRO_TESTE: CadastroDoContrato = {
+  contatos: [
+    { tipo: 'email', rotulo: 'E-mail', valor: 'maria.silva@email.com' },
+    { tipo: 'celular', rotulo: 'Celular', valor: '(11) 98765-4321' },
+  ],
+  enderecos: [{ rotulo: 'Endereço de cobrança', linhas: ['Rua das Flores, 100 - apto 12', 'Centro · São Paulo/SP', 'CEP 01000-000'], campos: { cep: '01000-000', logradouro: 'Rua das Flores', numero: '100', complemento: 'apto 12', bairro: 'Centro', municipio: 'São Paulo', uf: 'SP' } }],
+  pagamento: [{ modalidade: 'Boleto', detalhes: [{ rotulo: 'Banco', valor: 'Banco de Teste' }, { rotulo: 'Agência', valor: '0001' }, { rotulo: 'Conta', valor: '•••456-7' }] }],
+  responsaveis: [{ papel: 'Responsável financeiro', nome: 'Maria da Silva', detalhes: [{ rotulo: 'CPF', valor: '529.982.247-25' }] }],
+}
+
+export const CADASTRO_EMPRESA_TESTE: CadastroDaEmpresa = {
+  empresa: [
+    { rotulo: 'Nome fantasia', valor: 'Alfa Comércio' },
+    { rotulo: 'Razão social', valor: 'Alfa Comércio Ltda' },
+    { rotulo: 'CNPJ', valor: '00.000.000/0001-00' },
+    { rotulo: 'Contrato desde', valor: '2022-03-01' },
+  ],
+  representante: {
+    papel: 'Responsável pela empresa', nome: 'Carlos Pereira',
+    detalhes: [{ rotulo: 'CPF', valor: '111.444.777-35' }, { rotulo: 'E-mail', valor: 'carlos@alfa.com.br' }, { rotulo: 'Telefone', valor: '(11) 91234-5678' }],
+  },
+  contatos: [{ tipo: 'email', rotulo: 'E-mail', valor: 'financeiro@alfa.com.br' }, { tipo: 'telefone', rotulo: 'Telefone', valor: '(11) 3000-0000' }],
+  enderecos: [{ rotulo: 'Endereço', linhas: ['Av. Principal, 500 - sala 3', 'Centro · São Paulo/SP', 'CEP 01001-000'], campos: { cep: '01001-000', logradouro: 'Av. Principal', numero: '500', complemento: 'sala 3', bairro: 'Centro', municipio: 'São Paulo', uf: 'SP' } }],
+  pagamento: [{ modalidade: 'Boleto', detalhes: [{ rotulo: 'Banco', valor: 'Banco de Teste' }, { rotulo: 'Agência', valor: '0001' }, { rotulo: 'Conta', valor: '•••789-0' }] }],
+}
+
+/** Regra "Serviços online" de teste: o que cada ator pode alterar e como (imediato ou sob aprovação). */
+export const REGRA_SERVICOS_ONLINE_TESTE: LinhaDaRegraServicosOnline[] = [
+  { ator: 'Titular', local: 'Portal do cliente', tipo: 'Alteração de e-mail', atendimento: 'Imediato' },
+  { ator: 'Titular', local: 'Portal do cliente', tipo: 'Alteração de celular', atendimento: 'Imediato' },
+  { ator: 'Titular', local: 'Portal do cliente', tipo: 'Alteração de endereço', atendimento: 'Sob aprovação', documentos: ['Comprovante de residência'], mensagem: 'Envie um comprovante de residência recente.' },
+  { ator: 'Representante', local: 'Portal do cliente', tipo: 'Alteração de e-mail', atendimento: 'Sob aprovação' },
+  { ator: 'Representante', local: 'Portal do cliente', tipo: 'Alteração de telefone', atendimento: 'Sob aprovação' },
+  { ator: 'Representante', local: 'Portal do cliente', tipo: 'Alteração de endereço', atendimento: 'Sob aprovação' },
+  // Movimentação: o titular inclui e tira dependente (sem tirar a si mesmo); o responsável inclui titular e dependente e tira só dependente.
+  { ator: 'Titular', local: 'Portal do cliente', tipo: 'Inclusão de dependente', atendimento: 'Sob aprovação' },
+  { ator: 'Titular', local: 'Portal do cliente', tipo: 'Exclusão de dependente', atendimento: 'Sob aprovação' },
+  { ator: 'Representante', local: 'Portal do cliente', tipo: 'Inclusão de titular', atendimento: 'Sob aprovação' },
+  { ator: 'Representante', local: 'Portal do cliente', tipo: 'Inclusão de dependente', atendimento: 'Sob aprovação' },
+  { ator: 'Representante', local: 'Portal do cliente', tipo: 'Exclusão de dependente', atendimento: 'Sob aprovação' },
+]
+
+/** Aplica de verdade a alteração imediata nos dados de teste (só em memória). */
+export function aplicarAlteracaoNoMock(alvo: Pick<CadastroDoContrato, 'contatos' | 'enderecos'>, campo: string, v: Record<string, string>) {
+  const trocar = (tipo: 'email' | 'celular' | 'telefone', rotulo: string, valor: string) => {
+    const i = alvo.contatos.findIndex(c => c.tipo === tipo)
+    const novo = { tipo, rotulo, valor }
+    if (i >= 0) alvo.contatos[i] = novo
+    else alvo.contatos.push(novo)
+  }
+  if (campo === 'email') trocar('email', 'E-mail', v.email ?? '')
+  else if (campo === 'celular') trocar('celular', 'Celular', v.celular ?? '')
+  else if (campo === 'telefone') trocar('telefone', 'Telefone', v.telefone ?? '')
+  else if (campo === 'endereco') {
+    const rua = [v.logradouro, v.numero].filter(Boolean).join(', ') + (v.complemento ? ' - ' + v.complemento : '')
+    alvo.enderecos = [{ rotulo: alvo.enderecos[0]?.rotulo ?? 'Endereço', linhas: [rua, [v.bairro, [v.municipio, v.uf].filter(Boolean).join('/')].filter(Boolean).join(' · '), 'CEP ' + (v.cep ?? '')].filter(Boolean), campos: { ...v } }]
+  }
+}
+
+/** Cadastro de teste de cada família da empresa (cópia do modelo; muda quando uma alteração imediata é aplicada). */
+const cadastrosDeFamiliaTeste = new Map<string, CadastroDoContrato>()
+export function cadastroDaFamiliaTeste(id: string): CadastroDoContrato {
+  if (!cadastrosDeFamiliaTeste.has(id)) cadastrosDeFamiliaTeste.set(id, structuredClone({ ...CADASTRO_TESTE, pagamento: [] }))
+  return cadastrosDeFamiliaTeste.get(id)!
+}
+
+/** Consulta de CEP de teste: alguns CEPs conhecidos; qualquer outro vira um endereço genérico de São Paulo. */
+export function cepDeTeste(cep: string): EnderecoDoCep | undefined {
+  const n = cep.replace(/\D/g, '')
+  if (n === '00000000') return undefined
+  const conhecidos: Record<string, EnderecoDoCep> = {
+    '01310100': { logradouro: 'AVENIDA PAULISTA', bairro: 'BELA VISTA', municipio: 'SAO PAULO', uf: 'SP' },
+    '20040020': { logradouro: 'RUA DA ASSEMBLEIA', bairro: 'CENTRO', municipio: 'RIO DE JANEIRO', uf: 'RJ' },
+    '69037145': { logradouro: 'ALAMEDA CARLOTA BONFIM', bairro: 'PONTA NEGRA', municipio: 'MANAUS', uf: 'AM' },
+  }
+  return conhecidos[n] ?? { logradouro: 'RUA EXEMPLO', bairro: 'CENTRO', municipio: 'SAO PAULO', uf: 'SP' }
+}

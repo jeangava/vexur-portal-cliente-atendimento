@@ -2,7 +2,7 @@
 export default defineEventHandler(async (event) => {
   const corpo = await readBody<{ cpf?: string }>(event)
   const cpf = somenteDigitos(corpo?.cpf ?? '')
-  const problema = problemaNoCpf(cpf)
+  const problema = problemaNoCpf(cpf, { conferirDigitos: conferirDigitosNoAcesso() })
   if (problema) throw createError({ statusCode: 400, message: problema })
 
   const contatos = await listarContatos(cpf)

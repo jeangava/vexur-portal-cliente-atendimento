@@ -24,6 +24,8 @@ export interface ContratoCliente {
   plano: string
   /** Só no empresarial */
   empresa?: string
+  /** Número do contrato da empresa (PME): liga o titular ao contrato de que a pessoa é responsável */
+  contratoEmpresa?: string
   /** AAAA-MM-DD */
   inicioVigencia: string
   /** AAAA-MM-DD, só quando cancelado */
@@ -31,7 +33,7 @@ export interface ContratoCliente {
 }
 
 /** Áreas do portal que dependem do contrato escolhido. Início e Ajuda são de todos. */
-export type AreaPortal = 'contas' | 'servicos' | 'comunicados' | 'familia' | 'movimentacao' | 'pedidos'
+export type AreaPortal = 'contas' | 'servicos' | 'comunicados' | 'familia' | 'movimentacao' | 'pedidos' | 'empresa'
 
 /** O que o usuário pode ver e fazer no contrato escolhido (calculado no servidor). */
 export interface AcessoPortal {
@@ -90,10 +92,31 @@ export interface Comunicado {
   paragrafos: string[]
 }
 
+/** Um campo a escolher antes de gerar o documento (ano ou competência), com as opções que o contrato permite. */
+export interface CampoDoServicoTela {
+  id: 'ano' | 'competencia'
+  rotulo: string
+  opcoes: { valor: string, rotulo: string }[]
+}
+
+/** Documento gerado para ver na tela e baixar. */
+export interface DocumentoGerado {
+  /** O arquivo não vem com endereço: abre-se por /api/servicos/documento/{id} (ver ou baixar) */
+  arquivos: { id: string, nome: string }[]
+  /** Aviso do sistema (ex.: nada a emitir neste período) */
+  aviso?: string
+}
+
 /** Situação de um serviço para o usuário logado (calculada no servidor). */
 export interface DisponibilidadeServico {
   id: string
   disponivel: boolean
+  /** true: o contrato não tem esse comunicado autorizado; a tela não mostra */
+  oculto?: boolean
+  /** Nome do comunicado quando não é um dos serviços conhecidos */
+  titulo?: string
+  /** O que o cliente escolhe antes de gerar o documento (só com o sistema ligado) */
+  campos?: CampoDoServicoTela[]
   /** Explicação simples quando não está disponível */
   motivo?: string
   /** Mensalidade que impede o serviço (ex.: quitação com conta em aberto) */
@@ -123,6 +146,8 @@ export interface Fatura {
 /** Produto (plano) de uma pessoa, com as características em linguagem simples. */
 export interface ProdutoBeneficiario {
   nome: string
+  /** true nos produtos opcionais; o plano principal vem sempre primeiro na lista */
+  opcional?: boolean
   tipo: 'saude' | 'odonto'
   operadora: string
   registroAns: string
@@ -140,6 +165,60 @@ export interface ProdutoBeneficiario {
   valorMensal?: number
 }
 
+/** Dados pessoais de um beneficiário (só leitura). Cada campo só vem quando o sistema tem o dado. */
+export interface DadosPessoais {
+  cpf?: string
+  /** AAAA-MM-DD */
+  nascimento?: string
+  sexo?: string
+  estadoCivil?: string
+  nomeMae?: string
+  cartaoSus?: string
+  nacionalidade?: string
+}
+
+export interface ContatoCadastro {
+  tipo: 'email' | 'telefone' | 'celular'
+  rotulo: string
+  valor: string
+}
+
+export interface EnderecoCadastro {
+  rotulo: string
+  linhas: string[]
+  /** O mesmo endereço em campos separados (cep, logradouro, numero, complemento, bairro, municipio, uf): preenche o formulário de alteração */
+  campos?: Record<string, string>
+}
+
+/** Meio de pagamento já com o que é sensível escondido (conta só com o final). */
+export interface PagamentoCadastro {
+  modalidade: string
+  detalhes: { rotulo: string, valor: string }[]
+}
+
+export interface PessoaDeContato {
+  papel: string
+  nome: string
+  detalhes: { rotulo: string, valor: string }[]
+}
+
+/** Contato, endereço e pagamento do contrato (só leitura). */
+export interface CadastroDoContrato {
+  contatos: ContatoCadastro[]
+  enderecos: EnderecoCadastro[]
+  pagamento: PagamentoCadastro[]
+  responsaveis: PessoaDeContato[]
+}
+
+/** Dados da empresa para o responsável (só leitura). */
+export interface CadastroDaEmpresa {
+  empresa: { rotulo: string, valor: string }[]
+  representante: PessoaDeContato | null
+  contatos: ContatoCadastro[]
+  enderecos: EnderecoCadastro[]
+  pagamento: PagamentoCadastro[]
+}
+
 export interface BeneficiarioPlano {
   /** Identificador interno (opaco) do beneficiário */
   id: string
@@ -148,6 +227,7 @@ export interface BeneficiarioPlano {
   titular: boolean
   numeroCarteirinha: string
   produtos: ProdutoBeneficiario[]
+  dados?: DadosPessoais
 }
 
 export interface MinhaFamilia {
@@ -174,8 +254,69 @@ export interface EventoHistorico {
 }
 
 /** De onde o pedido veio. "movimentacao" também aparece na área Movimentação. */
-export type CategoriaSolicitacao = 'movimentacao' | 'servico' | 'atendimento'
-export type TipoSolicitacao = TipoMovimentacao | 'servico' | 'atendimento'
+export type CategoriaSolicitacao = 'movimentacao' | 'servico' | 'atendimento' | 'cadastro'
+export type TipoSolicitacao = TipoMovimentacao | 'servico' | 'atendimento' | 'alteracao-cadastral'
+
+/** O que o cliente pode pedir para alterar nos dados do contrato. */
+export type CampoAlteravel = 'dados' | 'email' | 'celular' | 'telefone' | 'endereco'
+
+/** Regra de uma alteração cadastral. Hoje fixa; depois vem da API "Regra de alteração cadastral". */
+export interface RegraDaAlteracao {
+  campo: CampoAlteravel
+  permitido: boolean
+  /** Vai para a administradora aprovar antes de valer */
+  exigeAprovacao: boolean
+  /** Precisa enviar documento junto */
+  exigeDocumento: boolean
+}
+
+/** O que o ator pode fazer com uma alteração, segundo a regra "Serviços online". */
+export interface DecisaoDeAlteracao {
+  campo: CampoAlteravel
+  disponivel: boolean
+  /** imediato: o dado muda na hora; aprovacao: a administradora avalia antes */
+  atendimento: 'imediato' | 'aprovacao'
+  /** Documentos que a regra pede para esse caso */
+  documentos: string[]
+  mensagem?: string
+}
+
+/** Resultado do pedido de alteração: imediata (já feita) ou por aprovação (pedido aberto). */
+export interface ResultadoDaAlteracao {
+  pedido: Solicitacao
+  imediata: boolean
+}
+
+/** O que o ator pode fazer na Movimentação (incluir ou tirar pessoas), segundo a regra "Serviços online". */
+export type TipoDeMovimentacao = 'incluir-titular' | 'incluir-dependente' | 'excluir-titular' | 'excluir-dependente'
+
+export interface DecisaoDeMovimentacao {
+  tipo: TipoDeMovimentacao
+  disponivel: boolean
+  atendimento: 'imediato' | 'aprovacao'
+  documentos: string[]
+  mensagem?: string
+}
+
+/** O que a tela manda para pedir uma alteração. */
+export interface PedidoDeAlteracao {
+  campo: CampoAlteravel
+  valores: Record<string, string>
+  /** Responsável pela empresa: de qual família (número do contrato do titular, da própria empresa) é a alteração */
+  contrato?: string
+  /** Dados cadastrais: de qual pessoa do grupo familiar (id do beneficiário) */
+  pessoa?: string
+  /** Documentos que a regra pede, anexados NA HORA do pedido (um grupo de arquivos por documento exigido) */
+  anexos?: { documento: string, ids: string[] }[]
+}
+
+/** Endereço oficial de um CEP (a consulta do Vexur às bases de localidades). */
+export interface EnderecoDoCep {
+  logradouro: string
+  bairro: string
+  municipio: string
+  uf: string
+}
 
 /** Qualquer pedido do cliente (movimentação, serviço, atendimento), acompanhado pelo protocolo. */
 export interface Solicitacao {
@@ -222,7 +363,8 @@ export interface OpcoesMovimentacao {
   parentescos: OpcaoParentesco[]
   tiposPlanoAnterior: OpcaoSimples[]
   motivosExclusao: OpcaoSimples[]
-  quandoExcluir: (OpcaoSimples & { data: string })[]
+  /** "escolheData": o cliente informa a data (aparece um campo de data na tela); a data vem em `data` do pedido */
+  quandoExcluir: (OpcaoSimples & { data: string, escolheData?: boolean })[]
 }
 
 /** Tela principal da movimentação: beneficiários com o que dá para fazer com cada um. */
@@ -295,6 +437,8 @@ export interface DadosExclusao {
   beneficiario: string
   motivo: string
   quando: string
+  /** Só quando "quando" é a opção de escolher a data (AAAA-MM-DD) */
+  data?: string
   aceite: boolean
 }
 
@@ -310,11 +454,18 @@ export interface PessoaEmpresa {
   parentesco: string
   titular: boolean
   numeroCarteirinha: string
+  /** Plano PRINCIPAL da pessoa */
   plano: string
+  /** Planos opcionais (adicionais) que a pessoa também tem; vêm ao abrir a família */
+  opcionais?: string[]
+  /** Dados pessoais; vêm ao abrir a família */
+  dados?: DadosPessoais
   /** AAAA-MM-DD */
   inicioVigencia: string
   /** Cancelado = já saiu do plano (fica na lista para consulta) */
   situacao: SituacaoContrato
+  /** Continua no plano, mas com o plano suspenso (ex.: inadimplência). Só vale com situacao "ativo". */
+  suspenso?: boolean
   /** AAAA-MM-DD, só quando cancelado */
   fimVigencia?: string
   /** Pedido de saída em andamento */
@@ -323,9 +474,21 @@ export interface PessoaEmpresa {
 
 export interface TitularEmpresa extends PessoaEmpresa {
   dependentes: PessoaEmpresa[]
+  /** Só quando a lista vem sem os dependentes (sob demanda): quantos ele tem */
+  totalDependentes?: number
+}
+
+/** Família de um titular da empresa, carregada ao abrir a linha dele. */
+export interface FamiliaDaEmpresa {
+  titular: PessoaEmpresa
+  dependentes: PessoaEmpresa[]
+  /** Contato e endereço do contrato dessa família (o pagamento é da empresa e não entra aqui) */
+  cadastro?: CadastroDoContrato
 }
 
 export interface BeneficiariosEmpresa {
+  /** true: a lista traz só os titulares; os dependentes (e CPF/carteirinha) vêm ao abrir cada família */
+  dependentesSobDemanda?: boolean
   empresa: string
   /** Contagens de quem está ativo; `cancelados` = pessoas que já saíram */
   resumo: { titulares: number, dependentes: number, vidas: number, cancelados: number, saindo: number, inclusoesEmAnalise: number }
@@ -370,11 +533,18 @@ export interface DadosExclusaoEmpresa {
   pessoas: string[]
   motivo: string
   quando: string
+  /** Só quando "quando" é a opção de escolher a data (AAAA-MM-DD) */
+  data?: string
   aceite: boolean
 }
 
 export interface LinhaExtrato {
+  /** Tipo do lançamento. Ex.: "Mensalidade", "Taxa associativa" */
   descricao: string
+  /** Produto a que o lançamento se refere (nome amigável). Evita duas "Mensalidade" sem explicação. */
+  produto?: string
+  /** Complemento curto. Ex.: "parcela 2 de 3" */
+  detalhe?: string
   valor: number
 }
 

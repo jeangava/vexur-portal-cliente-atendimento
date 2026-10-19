@@ -43,9 +43,14 @@ async function copiarCarteirinha(numero: string) {
       </button>
     </div>
 
+    <DadosPessoaisLinha :dados="pessoa.dados" />
+
     <section v-for="p in pessoa.produtos" :key="p.nome" class="flex flex-col gap-3">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h4 class="m-0 text-lg font-bold">{{ p.nome }}</h4>
+        <h4 class="m-0 text-lg font-bold">
+          {{ p.nome }}
+          <span v-if="p.opcional" class="ml-1.5 rounded-full bg-fundo px-2.5 py-0.5 align-middle text-sm font-semibold text-apoio">Opcional</span>
+        </h4>
         <span class="text-[15px] text-apoio">{{ p.tipo === 'odonto' ? 'Odontológico' : 'Saúde' }} · {{ p.operadora }}</span>
       </div>
       <dl class="m-0 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
