@@ -79,6 +79,7 @@ defineExpose({ ativos, total })
   <div class="flex flex-col gap-5">
     <MensagemErro v-if="error" :texto="mensagemDeErro(error, 'Não conseguimos carregar os seus planos agora.')" />
     <MensagemErro :texto="erroGeral" />
+    <Carregando v-if="!data && !error" texto="Buscando os seus contratos…" />
 
     <div v-if="total > LIMITE_SEM_BUSCA" class="flex flex-col gap-2">
       <label for="busca-plano" class="text-[17px] font-bold">Procurar um contrato</label>

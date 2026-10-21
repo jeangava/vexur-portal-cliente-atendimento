@@ -5,7 +5,7 @@ import type {
 
 /**
  * Passo a passo para alterar dados: escolher o que mudar, preencher e enviar.
- * O que aparece e como a alteração é tratada (na hora ou por aprovação) vem da regra "Serviços online":
+ * O que aparece vem da regra "Serviços online" (quem pode e documentos); se muda na hora ou passa por aprovação vem do fluxo:
  * o portal só oferece o que a regra libera para o ator, e o servidor confere de novo ao enviar.
  * O formulário sempre abre preenchido com o que está cadastrado hoje.
  */

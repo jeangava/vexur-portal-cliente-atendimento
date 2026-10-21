@@ -43,3 +43,22 @@ export function decidirDeclaracaoSaude(porteTexto: unknown, inicioContratoEmpres
   if (dias <= DIAS_SEM_DECLARACAO) return { pedir: false, porte, motivo: `Porte 1, contrato da empresa com ${Math.max(dias, 0)} dias (até ${DIAS_SEM_DECLARACAO}): não pede declaração de saúde.` }
   return { pedir: true, porte, motivo: `Porte 1, contrato da empresa com ${dias} dias (mais de ${DIAS_SEM_DECLARACAO}): pede declaração de saúde.` }
 }
+
+/**
+ * Porte do contrato do fornecedor. O campo `contratacaoPorte` é o certo, mas nem todo cadastro está preenchido;
+ * sem ele, vale o que o próprio cadastro mostra: o nome do contrato ("... PORTE 3 ...") e, por último, a faixa de vidas
+ * (porte 1: até 29 · porte 2: 30 a 99 · porte 3: 100 em diante, como no catálogo de venda).
+ */
+export function porteDoCadastro(c: { contratacaoPorte?: unknown, codigoContratoFornecedor?: unknown, quantidadeVidasDe?: unknown, quantidadeVidasAte?: unknown } | null | undefined): string | undefined {
+  const doCampo = porteDeTexto(c?.contratacaoPorte)
+  if (doCampo) return `PORTE ${doCampo}`
+  const doNome = porteDeTexto(c?.codigoContratoFornecedor)
+  if (doNome) return `PORTE ${doNome}`
+  const de = Number(c?.quantidadeVidasDe)
+  if (Number.isFinite(de) && c?.quantidadeVidasDe !== null && c?.quantidadeVidasDe !== undefined && c?.quantidadeVidasDe !== '') {
+    if (de >= 100) return 'PORTE 3'
+    if (de >= 30) return 'PORTE 2'
+    if (de >= 0 && Number(c?.quantidadeVidasAte) <= 29) return 'PORTE 1'
+  }
+  return undefined
+}

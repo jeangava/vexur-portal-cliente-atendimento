@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decidirDeclaracaoSaude, porteDeTexto } from '../shared/utils/declaracaoSaude'
+import { decidirDeclaracaoSaude, porteDeTexto, porteDoCadastro } from '../shared/utils/declaracaoSaude'
 
 const HOJE = new Date(2026, 9, 18)
 
@@ -30,5 +30,23 @@ describe('declaração de saúde na inclusão de titular PME', () => {
     expect(sem.pedir).toBe(false)
     expect(sem.porte).toBeNull()
     expect(sem.motivo).toMatch(/Porte da empresa não informado/)
+  })
+})
+
+describe('porte do cadastro do contrato fornecedor', () => {
+  it('usa o campo, depois o nome do contrato, depois a faixa de vidas', () => {
+    expect(porteDoCadastro({ contratacaoPorte: 'PORTE 2 ' })).toBe('PORTE 2')
+    expect(porteDoCadastro({ codigoContratoFornecedor: 'CNU PME LIVRE ADESÃO - PORTE 3 BAHIA - 01.08.2020' })).toBe('PORTE 3')
+    expect(porteDoCadastro({ quantidadeVidasDe: 100, quantidadeVidasAte: 199 })).toBe('PORTE 3')
+    expect(porteDoCadastro({ quantidadeVidasDe: 30, quantidadeVidasAte: 99 })).toBe('PORTE 2')
+    expect(porteDoCadastro({ quantidadeVidasDe: 2, quantidadeVidasAte: 29 })).toBe('PORTE 1')
+  })
+  it('o campo preenchido manda mesmo que o nome diga outra coisa', () => {
+    expect(porteDoCadastro({ contratacaoPorte: 'PORTE 1', codigoContratoFornecedor: '... PORTE 3 ...' })).toBe('PORTE 1')
+  })
+  it('sem nada que indique o porte, não inventa', () => {
+    expect(porteDoCadastro({ contratacaoPorte: 'Não se aplica' })).toBeUndefined()
+    expect(porteDoCadastro({})).toBeUndefined()
+    expect(porteDoCadastro(null)).toBeUndefined()
   })
 })

@@ -138,6 +138,14 @@ export const TIPOS_PLANO_ANTERIOR_TESTE: OpcaoSimples[] = [
 export const PLANOS_EMPRESA_TESTE = ['Plano Empresa Saúde Mais', 'Plano Empresa Essencial']
 export const PARENTESCOS_EMPRESA_TESTE = ['Cônjuge', 'Companheiro(a)', 'Filho(a)', 'Enteado(a)']
 
+/** Regra de aceitação de teste: parentescos da movimentação cadastral e as opções de documentos de cada um. */
+export const ACEITACAO_MOVIMENTACAO_TESTE: { parentesco: string, documentos: string[][] }[] = [
+  { parentesco: 'Cônjuge', documentos: [['Certidão de casamento'], ['Declaração de união estável', 'RG']] },
+  { parentesco: 'Companheiro(a)', documentos: [['Declaração de união estável', 'RG']] },
+  { parentesco: 'Filho(a)', documentos: [['Certidão de nascimento']] },
+  { parentesco: 'Enteado(a)', documentos: [] },
+]
+
 export const MOTIVOS_EXCLUSAO_EMPRESA_TESTE: OpcaoSimples[] = [
   { id: 'desligamento', rotulo: 'Saiu da empresa', apoio: 'Demissão ou fim do contrato de trabalho' },
   { id: 'pedido', rotulo: 'A pessoa pediu para sair' },

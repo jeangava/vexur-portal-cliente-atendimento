@@ -312,10 +312,15 @@ function podePedirAlteracao(usuario: UsuarioPortal): boolean {
 }
 
 /**
- * O que o ator logado pode alterar e como, segundo a regra "Serviços online":
- * na hora (Imediato) ou por aprovação da administradora (Sob aprovação). Sem regra, nada é oferecido.
+ * O que o ator logado pode alterar e como. A regra "Serviços online" diz QUEM pode e quais documentos pede;
+ * se muda na hora ou passa pela área de cadastro quem diz é o FLUXO do Vexur (shared/utils/fluxosAlteracao.ts).
+ * Sem regra, nada é oferecido.
  */
 export async function decisoesDeAlteracao(usuario: UsuarioPortal, contratoAlvo?: string): Promise<DecisaoDeAlteracao[]> {
+  return comAtendimentoDoFluxo(await decisoesPelaRegra(usuario, contratoAlvo))
+}
+
+async function decisoesPelaRegra(usuario: UsuarioPortal, contratoAlvo?: string): Promise<DecisaoDeAlteracao[]> {
   const ator = atorDe(usuario)
   if (!podePedirAlteracao(usuario)) return decisoesDaRegra(null, ator)
   if (emModoMock()) {
@@ -376,6 +381,34 @@ async function pessoasDoGrupoParaAlteracao(usuario: UsuarioPortal, contratoAlvo?
  * - Sob aprovação: o dado NÃO muda; abre um pedido para a administradora avaliar (em análise, ou pendente se pedir documento).
  * No sistema real, os dois caminhos abrem o protocolo/fluxo no Vexur (ainda não ligado: precisa do fluxo de trabalho).
  */
+/**
+ * Alteração de verdade, pelos fluxos do Vexur. Por ora só o e-mail está ligado (o caso automático mais simples);
+ * telefone, endereço e dados pessoais respondem "ainda não está ligada" até serem conferidos um a um.
+ */
+async function alterarNoSistema(
+  usuario: UsuarioPortal,
+  campo: string,
+  dados: Partial<PedidoDeAlteracao>,
+  decisao: DecisaoDeAlteracao,
+  contratoAlvo: string | undefined,
+): Promise<ResultadoDaAlteracao> {
+  const ligado = campo === 'email' && !(atorDe(usuario) === 'representante' && !contratoAlvo)
+  if (!ligado) throw createError({ statusCode: 501, message: 'Esta alteração pelo portal ainda não está ligada ao sistema. Por enquanto, fale com a gente.' })
+  const novoEmail = String(dados.valores?.email ?? '').trim()
+  // Responsável: a família escolhida (já conferida contra a empresa); titular: o contrato dele.
+  const contrato = contratoAlvo ? await contratoDeTitularDaEmpresaNoGateway(contratoAlvo) : await contratoNoGateway()
+  const { protocolo } = await alterarEmailNoFluxo(contrato, novoEmail)
+  const agora = new Date().toISOString()
+  const imediata = decisao.atendimento === 'imediato'
+  const pedido: Solicitacao = {
+    protocolo, categoria: 'cadastro', tipo: 'alteracao-cadastral', titulo: tituloDaAlteracao(campo), criadaEm: isoDe(new Date()), anexos: [],
+    situacao: imediata ? 'concluida' : 'em-analise',
+    detalhe: imediata ? 'O pedido foi enviado e o sistema atualiza o e-mail sozinho, em instantes.' : 'A área de cadastro vai avaliar o pedido. O dado só muda depois da aprovação.',
+    historico: [{ quando: agora, texto: 'Pedido enviado pelo portal.' }],
+  }
+  return { pedido, imediata }
+}
+
 export async function pedirAlteracaoCadastral(usuario: UsuarioPortal, dados: Partial<PedidoDeAlteracao>): Promise<ResultadoDaAlteracao> {
   const campo = String(dados.campo ?? '')
   const problema = problemaNaAlteracao(campo, dados.valores ?? {})
@@ -393,9 +426,7 @@ export async function pedirAlteracaoCadastral(usuario: UsuarioPortal, dados: Par
     if (emModoMock() && ids.some(id => !documentosMock.has(id))) throw createError({ statusCode: 400, message: 'Um dos arquivos não foi recebido. Anexe de novo: ' + exigido + '.' })
     if (emModoMock()) documentosNomes.push(exigido + ': ' + ids.map(id => documentosMock.get(id)).join(', '))
   }
-  if (!emModoMock()) {
-    throw createError({ statusCode: 501, message: 'A alteração de dados pelo portal ainda não está ligada ao sistema. Por enquanto, fale com a gente.' })
-  }
+  if (!emModoMock()) return alterarNoSistema(usuario, campo, dados, decisao, contratoAlvo)
 
   // Responsável: a alteração é da FAMÍLIA escolhida (nome do titular no título); sem família, é a da própria empresa.
   const empresa = atorDe(usuario) === 'representante' && !contratoAlvo
@@ -522,12 +553,59 @@ export async function opcoesMovimentacao(usuario: UsuarioPortal): Promise<Opcoes
 
 /** Todos os pedidos do cliente (área "Meus pedidos"), do mais novo para o mais antigo. */
 export async function listarPedidos(usuario: UsuarioPortal): Promise<Solicitacao[]> {
-  if (!emModoMock()) aindaNaoIntegrado()
+  if (!emModoMock()) return pedidosReais(usuario)
   // Só os pedidos do contrato escolhido.
   return solicitacoesMock
     .filter(s => s.contratoId === idContrato(usuario))
     .sort((a, b) => b.criadaEm.localeCompare(a.criadaEm))
     .map(paraCliente)
+}
+
+const pedidosEmCache = new Map<string, { ate: number, lista: Solicitacao[] }>()
+const nomeDoProtocolo = new Map<string, string | null>()
+
+/** Roda no máximo `limite` ao mesmo tempo (a empresa pode ter dezenas de contratos para consultar). */
+async function emParalelo<T, R>(itens: T[], limite: number, fazer: (item: T) => Promise<R>): Promise<R[]> {
+  const resultado: R[] = new Array(itens.length)
+  let proximo = 0
+  await Promise.all(Array.from({ length: Math.min(limite, itens.length) }, async () => {
+    while (proximo < itens.length) {
+      const i = proximo++
+      resultado[i] = await fazer(itens[i]!)
+    }
+  }))
+  return resultado
+}
+
+/**
+ * Pedidos de verdade, a partir dos protocolos do Vexur. Titular: os do contrato dele. Responsável pela empresa:
+ * os de todos os contratos da empresa (inclusive os que ele mesmo abriu para um funcionário).
+ */
+async function pedidosReais(usuario: UsuarioPortal): Promise<Solicitacao[]> {
+  const chave = (usuario.contrato?.id ?? '') + ':' + (usuario.contrato?.numero ?? '')
+  const guardado = pedidosEmCache.get(chave)
+  if (guardado && guardado.ate > Date.now()) return guardado.lista
+  const numeros = atorDe(usuario) === 'representante'
+    ? [...new Set([String(usuario.contrato?.numero ?? ''), ...(await titularesDaEmpresaNoGateway()).map(t => String(t.numeroContrato ?? ''))])]
+    : [String(usuario.contrato?.numero ?? '')]
+  const brutos = (await emParalelo(numeros.filter(Boolean), 8, n => protocolosDoContratoNoGateway(n).catch(() => [] as ProtocoloBruto[]))).flat()
+  const unicos = [...new Map(brutos.map(p => [p.protocolo, p])).values()]
+  if (import.meta.dev) {
+    // Só contagens e datas (nunca nomes ou números de contrato): para entender o que o serviço de protocolos devolve.
+    const datas = brutos.map(p => Number(p.dataCriacao)).filter(Number.isFinite)
+    console.info(JSON.stringify({ origem: 'diagnostico-pedidos', contratosConsultados: numeros.length, protocolos: brutos.length, unicos: unicos.length, maisNovo: datas.length ? new Date(Math.max(...datas)).toISOString().slice(0, 10) : null, processos: [...new Set(unicos.map(p => p.processo))].slice(0, 12) }))
+  }
+  // O nome de quem entra ou sai está no payload; busca só para inclusão e saída, uma vez por protocolo.
+  const comNome = unicos.filter(p => ['inclusao', 'exclusao'].includes(categoriaDoProcesso(p.processo)?.tipo ?? ''))
+  await emParalelo(comNome.filter(p => !nomeDoProtocolo.has(String(p.id))), 6, async (p) => {
+    nomeDoProtocolo.set(String(p.id), (await pessoaDoProtocoloNoGateway(p.id)) ?? null)
+  })
+  const lista = unicos
+    .map(p => solicitacaoDoProtocolo(p, nomeDoProtocolo.get(String(p.id)) ?? undefined))
+    .filter((s): s is Solicitacao => !!s)
+    .sort((a, b) => b.criadaEm.localeCompare(a.criadaEm))
+  pedidosEmCache.set(chave, { ate: Date.now() + 30_000, lista })
+  return lista
 }
 
 /** Tira os campos internos do mock (contrato, CPFs do lote...) antes de mandar ao navegador. */
@@ -877,8 +955,27 @@ export async function beneficiariosEmpresa(usuario: UsuarioPortal): Promise<Bene
   }
 }
 
+const aceitosEmCache = new Map<string, { ate: number, lista: ParentescoDaInclusao[] }>()
+
+/**
+ * Parentescos que podem ser incluídos pela Movimentação e os documentos de cada um: vêm da regra de aceitação de
+ * beneficiário (o que está marcado como "Movimentação cadastral"). Sem regra ou se o serviço não responder, nenhum.
+ */
+export async function parentescosDaInclusao(usuario: UsuarioPortal): Promise<ParentescoDaInclusao[]> {
+  exigirRepresentante(usuario)
+  if (emModoMock()) return ACEITACAO_MOVIMENTACAO_TESTE
+  const chave = String(usuario.contrato?.numero ?? '')
+  const guardado = aceitosEmCache.get(chave)
+  if (guardado && guardado.ate > Date.now()) return guardado.lista
+  const lista = await parentescosAceitosNoGateway().catch(() => [])
+  // Só guarda o que veio: um erro passageiro não pode esconder os parentescos por 10 minutos.
+  if (lista.length) aceitosEmCache.set(chave, { ate: Date.now() + 10 * 60_000, lista })
+  return lista
+}
+
 async function contextoInclusao(usuario: UsuarioPortal): Promise<ContextoInclusao> {
   const empresa = await beneficiariosEmpresa(usuario)
+  const aceitos = await parentescosDaInclusao(usuario)
   // Só quem está ativo: quem já saiu do plano pode voltar (e não recebe dependente novo como titular).
   const ativos = empresa.titulares.filter(t => t.situacao === 'ativo')
   const todos = empresa.titulares.flatMap(t => [t, ...t.dependentes]).filter(p => p.situacao === 'ativo')
@@ -890,7 +987,7 @@ async function contextoInclusao(usuario: UsuarioPortal): Promise<ContextoInclusa
     cpfsNoPlano: new Set([...todos.map(p => somenteDigitos(p.cpf)), ...emAnalise]),
     titularesNoPlano: new Set(ativos.map(t => somenteDigitos(t.cpf))),
     planos: empresa.planos,
-    parentescos: empresa.parentescos,
+    parentescos: aceitos.map(p => p.parentesco),
   }
 }
 
@@ -954,15 +1051,184 @@ export async function enviarPlanilhaEmpresa(usuario: UsuarioPortal, cpfDono: str
   return paraCliente(pedido)
 }
 
-/** Uma pessoa pelo formulário: mesma conferência da planilha. */
-export async function incluirPessoaEmpresa(usuario: UsuarioPortal, dados: LinhaInclusaoEmpresa): Promise<Solicitacao> {
+/**
+ * Datas de início do plano que o calendário libera para o titular escolhido, sempre no mesmo dia da vigência dele.
+ * Só o responsável da empresa; o titular é conferido contra a empresa.
+ */
+export async function vigenciasDaInclusao(usuario: UsuarioPortal, titularId: string): Promise<{ dia?: number, datas: { iso: string, rotulo: string }[] }> {
   exigirRepresentante(usuario)
-  const [linha] = conferirInclusoes([{ ...dados, linha: 1 }], await contextoInclusao(usuario))
+  if (!titularId) throw createError({ statusCode: 400, message: 'Escolha o funcionário (titular).' })
+  if (emModoMock()) {
+    await familiaDoTitularDaEmpresa(usuario, titularId)
+    const hoje = new Date()
+    const datas = [1, 2, 3].map((n) => {
+      const d = new Date(hoje.getFullYear(), hoje.getMonth() + n, 10)
+      return { iso: isoDe(d), rotulo: formatarData(isoDe(d)) }
+    })
+    return { dia: 10, datas }
+  }
+  return iniciosDeVigenciaNoGateway(await contratoDeTitularDaEmpresaNoGateway(titularId))
+}
+
+/** Envio de verdade da inclusão de dependente: abre o fluxo "Inclusão de beneficiário no portal" no Vexur (análise manual). */
+async function enviarInclusaoDeDependente(linha: LinhaConferida, dados: LinhaInclusaoEmpresa, titularId: string, usuario: UsuarioPortal): Promise<Solicitacao> {
+  const inicio = String(dados.inicio ?? '')
+  if (!titularId) throw createError({ statusCode: 400, message: 'Escolha o funcionário (titular).' })
+  // O servidor refaz a conta: evento no prazo e declaração de saúde (a tela só mostra o resultado).
+  const avaliacao = await avaliarInclusaoDeDependente(usuario, { titularId, parentesco: linha.parentesco, evento: !!dados.eventoData, dataEvento: dados.eventoData })
+  const eventoValido = !!dados.eventoData && !!avaliacao.evento?.valeComoEvento
+  if (avaliacao.declaracao.pedir) {
+    // A declaração de saúde do dependente ainda não existe no portal: não enviamos o que precisaria dela.
+    throw createError({ statusCode: 409, message: 'Esta inclusão pede declaração de saúde, que ainda não está disponível pelo portal. Fale com a gente para concluir.' })
+  }
+  const contrato = await contratoDeTitularDaEmpresaNoGateway(titularId)
+  // Inclusão comum: o início vem do calendário do Vexur, no dia da vigência do titular; outra data é recusada.
+  // Evento (RN, RC, RT) dentro do prazo: o plano começa na APROVAÇÃO; a data de hoje vai só como provisória.
+  if (!eventoValido && !(await iniciosDeVigenciaNoGateway(contrato)).datas.some(d => d.iso === inicio)) {
+    throw createError({ statusCode: 400, message: 'Escolha uma das datas de início da lista.' })
+  }
+  const inicioNoPedido = eventoValido ? isoDe(new Date()) : inicio
+  const dp = dados.dadosPessoais!
+  const { protocolo } = await incluirDependenteNoFluxo(contrato, {
+    parentesco: linha.parentesco, nome: linha.nome, cpf: linha.cpf, nascimento: linha.nascimento,
+    sexo: dp.sexo, estadoCivil: dp.estadoCivil, nomeMae: dp.nomeMae, naoPossuiNomeMae: dp.naoPossuiNomeMae,
+    naturalidade: dp.naturalidade, rg: dp.rg, orgaoExpedidor: dp.orgaoExpedidor, ufRg: dp.ufRg, pisPasep: dp.pisPasep,
+    cartaoSus: dp.cartaoSus, declaracaoNascidoVivo: dp.declaracaoNascidoVivo,
+  }, inicioNoPedido, eventoValido ? { data: dados.eventoData! } : undefined, eventoValido ? undefined : dados.planoAnterior, eventoValido)
+  const agora = new Date().toISOString()
+  return {
+    protocolo, categoria: 'movimentacao', tipo: 'inclusao', titulo: 'Incluir ' + linha.nome, pessoa: linha.nome,
+    criadaEm: isoDe(new Date()), situacao: 'em-analise', anexos: [],
+    detalhe: 'Vamos conferir os dados. Você recebe a resposta em até 5 dias úteis.',
+    historico: [{ quando: agora, texto: eventoValido ? 'Pedido enviado pelo portal. O plano começa quando a inclusão for aprovada.' : 'Pedido enviado pelo portal. Início do plano em ' + formatarData(inicio) + '.' }],
+  }
+}
+
+/** Uma pessoa pelo formulário: mesma conferência da planilha. */
+const portesEmCache = new Map<string, { ate: number, porte: string | undefined }>()
+
+/** Porte da empresa pelo cadastro do contrato fornecedor (guarda 30 min; o mock é porte 1). */
+async function porteDoTitular(contrato: Awaited<ReturnType<typeof contratoDeTitularDaEmpresaNoGateway>>): Promise<string | undefined> {
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco))
+  const chave = String(produtoPrincipal(titular?.produto ?? [])?.idContratoFornecedor ?? '')
+  const guardado = portesEmCache.get(chave)
+  if (chave && guardado && guardado.ate > Date.now()) return guardado.porte
+  const porte = await porteDoContratoNoGateway(contrato).catch(() => undefined)
+  if (chave && porte) portesEmCache.set(chave, { ate: Date.now() + 30 * 60_000, porte })
+  return porte
+}
+
+export interface AvaliacaoDaInclusao {
+  /** Tipo do evento que o parentesco pode ter (RN, RC, RT); null = esse parentesco não tem evento */
+  tipoDeEvento: TipoDeEvento | null
+  evento: AvaliacaoDoEvento | null
+  declaracao: DecisaoDeclaracaoDoDependente
+}
+
+/**
+ * Antes dos dados da pessoa: a inclusão é por evento (recém-nascido, recém-casado, recém-tutelado)? Está dentro do prazo
+ * da regra de aceitação? E, pelo porte da empresa, vai pedir declaração de saúde? Só o responsável da empresa.
+ */
+export async function avaliarInclusaoDeDependente(
+  usuario: UsuarioPortal,
+  dados: { titularId?: string, parentesco?: string, evento?: boolean, dataEvento?: string },
+): Promise<AvaliacaoDaInclusao> {
+  exigirRepresentante(usuario)
+  if (!dados.titularId) throw createError({ statusCode: 400, message: 'Escolha o funcionário (titular).' })
+  const aceito = dados.parentesco
+    ? (await parentescosDaInclusao(usuario)).find(p => normalizarTexto(p.parentesco) === normalizarTexto(dados.parentesco ?? ''))
+    : undefined
+  if (dados.parentesco && !aceito) throw createError({ statusCode: 400, message: 'Escolha um parentesco da lista.' })
+  if (dados.evento && !aceito) throw createError({ statusCode: 400, message: 'Escolha o parentesco do evento.' })
+  const tipoDeEvento = aceito ? eventoDoParentesco(aceito.parentesco) : null
+  let evento: AvaliacaoDoEvento | null = null
+  if (dados.evento) {
+    if (!tipoDeEvento) throw createError({ statusCode: 400, message: 'Esse parentesco não tem inclusão por evento. Responda "Não".' })
+    evento = avaliarEvento(String(dados.dataEvento ?? ''), aceito?.prazoInclusaoDias)
+  }
+  const porte = emModoMock() ? 'PORTE 1' : await porteDoTitular(await contratoDeTitularDaEmpresaNoGateway(dados.titularId))
+  return { tipoDeEvento, evento, declaracao: decidirDeclaracaoDoDependente(porte, evento) }
+}
+
+export async function incluirPessoaEmpresa(
+  usuario: UsuarioPortal, dados: LinhaInclusaoEmpresa, anexos: { documento: string, ids: string[] }[] = [],
+): Promise<Solicitacao> {
+  exigirRepresentante(usuario)
+  const ctx = await contextoInclusao(usuario)
+  // Dependente: o titular vem da lista da empresa (conferido aqui) e o plano é SEMPRE o dele, o cliente não escolhe.
+  let linhaDeEntrada: LinhaInclusaoEmpresa = dados
+  let titularConferido = ''
+  if (normalizarTexto(dados.parentesco) !== normalizarTexto(PARENTESCO_TITULAR)) {
+    if (!dados.titularId) throw createError({ statusCode: 400, message: 'Escolha o funcionário (titular) de quem a pessoa é dependente.' })
+    const familia = await familiaDoTitularDaEmpresa(usuario, dados.titularId)
+    if (familia.titular.situacao !== 'ativo') throw createError({ statusCode: 400, message: 'Esse funcionário não está mais no plano.' })
+    linhaDeEntrada = { ...dados, cpfTitular: familia.titular.cpf, plano: familia.titular.plano }
+    titularConferido = dados.titularId
+    ctx.titularesNoPlano.add(somenteDigitos(familia.titular.cpf))
+    for (const p of [familia.titular, ...familia.dependentes]) if (p.situacao === 'ativo') ctx.cpfsNoPlano.add(somenteDigitos(p.cpf))
+    if (!ctx.planos.includes(familia.titular.plano)) ctx.planos = [...ctx.planos, familia.titular.plano]
+  }
+  const [linha] = conferirInclusoes([{ ...linhaDeEntrada, linha: 1 }], ctx)
   if (linha!.erros.length) throw createError({ statusCode: 400, message: linha!.erros[0]! })
+  const problemaCadastro = problemaNosDadosPessoais(dados.dadosPessoais)
+  if (problemaCadastro) throw createError({ statusCode: 400, message: problemaCadastro })
+  const problemaPlano = dados.planoAnterior ? problemaNoPlanoAnterior(dados.planoAnterior) : null
+  if (problemaPlano) throw createError({ statusCode: 400, message: problemaPlano })
   await exigirMovimentacao(usuario, linha!.parentesco === PARENTESCO_TITULAR ? 'incluir-titular' : 'incluir-dependente')
+  // Dependente: a regra de aceitação diz quais documentos (uma opção completa) vêm anexados ao pedido.
+  const documentosNomes: string[] = []
+  if (linha!.parentesco !== PARENTESCO_TITULAR) {
+    const aceito = (await parentescosDaInclusao(usuario)).find(p => normalizarTexto(p.parentesco) === normalizarTexto(linha!.parentesco))
+    const opcoes = aceito?.documentos ?? []
+    const anexado = (doc: string) => (anexos.find(a => a.documento === doc)?.ids ?? []).slice(0, 5)
+    const cumprida = !opcoes.length ? [] : opcoes.find(o => o.every(d => anexado(d).length))
+    if (opcoes.length && !cumprida) {
+      throw createError({ statusCode: 400, message: 'Anexe os documentos: ' + (opcoes.length === 1 ? opcoes[0]!.join(' e ') : opcoes.map(o => o.join(' e ')).join(' ou ')) + '.' })
+    }
+    for (const doc of cumprida ?? []) {
+      const ids = anexado(doc)
+      if (emModoMock() && ids.some(id => !documentosMock.has(id))) throw createError({ statusCode: 400, message: 'Um dos arquivos não foi recebido. Anexe de novo: ' + doc + '.' })
+      if (emModoMock()) documentosNomes.push(doc + ': ' + ids.map(id => documentosMock.get(id)).join(', '))
+    }
+  }
+  if (!emModoMock()) {
+    if (linha!.parentesco === PARENTESCO_TITULAR) throw createError({ statusCode: 501, message: 'A inclusão de funcionário pelo portal ainda não está ligada ao sistema. Por enquanto, fale com a gente.' })
+    const enviado = await enviarInclusaoDeDependente(linha!, dados, titularConferido, usuario)
+    pedidosEmCache.clear()
+    return enviado
+  }
   const pedido = pedidoDeInclusao(usuario, [linha!], 'Pedido enviado pelo portal')
+  if (documentosNomes.length) pedido.historico.push({ quando: new Date().toISOString(), texto: 'Documentos enviados — ' + documentosNomes.join('; ') + '.' })
   solicitacoesMock.push(pedido)
   return paraCliente(pedido)
+}
+
+/**
+ * Quanto a família do titular escolhido paga hoje e, com os dados da pessoa que vai entrar, quanto passa a pagar
+ * (tabela de preço do Vexur). Só leitura; só o responsável da empresa.
+ */
+export async function simularInclusaoEmpresa(
+  usuario: UsuarioPortal, dados: { titularId?: string, parentesco?: string, nome?: string, sexo?: string, estadoCivil?: string, nascimento?: string },
+): Promise<SimulacaoInclusao> {
+  exigirRepresentante(usuario)
+  const titularId = String(dados.titularId ?? '')
+  if (!titularId) throw createError({ statusCode: 400, message: 'Escolha o funcionário (titular).' })
+  const aceitos = await parentescosDaInclusao(usuario)
+  const parentesco = aceitos.find(p => normalizarTexto(p.parentesco) === normalizarTexto(dados.parentesco ?? ''))?.parentesco
+  const nascimento = String(dados.nascimento ?? '')
+  const completo = !!parentesco && /^\d{4}-\d{2}-\d{2}$/.test(nascimento) && !!String(dados.sexo ?? '').trim()
+  const dependente = completo
+    ? { parentesco: parentesco!, nome: String(dados.nome ?? '').trim() || 'Dependente', sexo: String(dados.sexo), estadoCivil: String(dados.estadoCivil ?? ''), nascimento }
+    : undefined
+  if (emModoMock()) {
+    const familia = await familiaDoTitularDaEmpresa(usuario, titularId)
+    const pessoas = [familia.titular, ...familia.dependentes].filter(p => p.situacao === 'ativo').map(p => ({ nome: p.nome, parentesco: p.parentesco, valor: p.titular ? 420 : 310 }))
+    const total = pessoas.reduce((n, p) => n + p.valor, 0)
+    return dependente
+      ? { familia: { pessoas, total }, dependente: { valor: 310, produtos: [{ nome: familia.titular.plano, valor: 310 }] }, novoTotal: total + 310, diferenca: 310 }
+      : { familia: { pessoas, total } }
+  }
+  return simularInclusaoNoGateway(await contratoDeTitularDaEmpresaNoGateway(titularId), dependente)
 }
 
 /** Tirar várias pessoas de uma vez. Titular marcado leva os dependentes junto. */

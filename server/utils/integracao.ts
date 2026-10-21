@@ -1,5 +1,12 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { FLUXO_DA_ALTERACAO } from '#shared/utils/fluxosAlteracao'
+import type { SimulacaoInclusao } from '#shared/types/portal'
+import type { ProtocoloBruto } from '#shared/utils/protocolos'
+import type { PlanoAnterior } from '#shared/utils/planoAnterior'
+import { parentescosDaMovimentacao, type ParentescoAceito, type RegraDeAceitacaoBruta } from '#shared/utils/aceitacaoBeneficiario'
 import type { ContratoDaSessao } from './gateway'
-import type { CobrancaBruta, ComunicacaoBruta, ComunicadoEnviadoBruto, ContratoBruto, LoginBruto, LoginPortalBruto, TitularPmeBruto } from './mapeamento'
+import type { BeneficiarioBruto, CobrancaBruta, ComunicacaoBruta, ComunicadoEnviadoBruto, ContratoBruto, LoginBruto, LoginPortalBruto, TitularPmeBruto } from './mapeamento'
 import type { ContratoCliente } from '#shared/types/portal'
 import type { RotaDoServico } from './servicosRotas'
 import type { LinhaDaRegraServicosOnline } from '#shared/utils/regraServicosOnline'
@@ -33,6 +40,7 @@ export async function loginNoGateway(cpf: string): Promise<LoginNoGateway | null
   const leve = await loginLeve(cpfFormatado)
   const resultado = leve !== undefined ? leve : await loginCompleto(cpfFormatado)
   if (!resultado) return null
+  if (import.meta.dev) acrescentarEmpresasDeTeste(resultado.mapeado, cpfFormatado)
   return {
     pessoa: resultado.mapeado.pessoa,
     contratos: resultado.mapeado.contratos.map(c => c.cliente),
@@ -41,6 +49,38 @@ export async function loginNoGateway(cpf: string): Promise<LoginNoGateway | null
       login: cpfFormatado,
       contratos: Object.fromEntries(resultado.mapeado.contratos.map(c => [c.cliente.id, c.gateway])),
     },
+  }
+}
+
+/**
+ * SÓ EM DESENVOLVIMENTO: enquanto o /login/portal não está publicado na homologação, o login antigo não mostra
+ * algumas empresas do responsável. O arquivo .data/empresas-teste.json (fora do git) lista, por CPF, as empresas
+ * a acrescentar como "representante". Nunca roda em produção.
+ */
+function acrescentarEmpresasDeTeste(mapeado: NonNullable<ReturnType<typeof mapearLoginPortal>>, cpfFormatado: string) {
+  const arquivo = join(process.cwd(), '.data', 'empresas-teste.json')
+  if (!existsSync(arquivo)) return
+  type EmpresaDeTeste = { numero: string, idContratoConveniado: number, empresa?: string, inicioVigencia?: string, numeroContratoAdesaoGrupo?: string }
+  let lista: EmpresaDeTeste[] = []
+  try {
+    lista = (JSON.parse(readFileSync(arquivo, 'utf8')) as Record<string, EmpresaDeTeste[]>)[cpfFormatado.replace(/\D/g, '')] ?? []
+  } catch { return }
+  for (const e of lista) {
+    if (mapeado.contratos.some(c => c.cliente.papel === 'representante' && c.cliente.numero === e.numero)) continue
+    mapeado.contratos.push({
+      cliente: {
+        id: `c${mapeado.contratos.length + 1}`,
+        numero: e.numero,
+        tipo: 'empresarial',
+        papel: 'representante',
+        situacao: 'ativo',
+        plano: 'Plano da empresa',
+        empresa: e.empresa,
+        contratoEmpresa: e.numero,
+        inicioVigencia: e.inicioVigencia ?? '',
+      },
+      gateway: { idContratoAdesao: 0, idContratoConveniado: e.idContratoConveniado, numeroContrato: e.numero, tipoContratacao: 'EMPRESARIAL', numeroContratoAdesaoGrupo: e.numeroContratoAdesaoGrupo },
+    })
   }
 }
 
@@ -365,6 +405,373 @@ export async function contratoDeTitularDaEmpresaNoGateway(numeroContrato: string
     throw createError({ statusCode: 404, message: 'Não encontramos essa pessoa na sua empresa.' })
   }
   return contratoNoGateway(numeroContrato)
+}
+
+/**
+ * Parentescos que a regra de aceitação de beneficiário aceita na MOVIMENTAÇÃO CADASTRAL (e os documentos de cada um).
+ * A regra vale pelo produto principal do titular (a regra sobe pela árvore de produtos). Só leitura.
+ */
+export async function parentescosAceitosNoGateway(): Promise<ParentescoAceito[]> {
+  const { acesso, contrato } = await credenciais()
+  const bruto = await contratoNoGateway(contratoDaSessaoEhDaEmpresa(contrato) ? await numeroParaComunicacoes(contrato) : contrato.numeroContrato)
+  const titular = (bruto.beneficiarios ?? []).find(b => ehTitular(b.parentesco))
+  const idProdutoFornecedor = Number(produtoPrincipal(titular?.produto ?? [])?.idProdutoFornecedor)
+  if (!idProdutoFornecedor) return []
+  const resposta = await chamarGateway<RegraDeAceitacaoBruta | RegraDeAceitacaoBruta[] | null>({
+    servico: 'api-vexur-regra-venda-aceitacao-beneficiario',
+    caminho: '/obterRegraProduto',
+    metodo: 'POST',
+    corpo: { filtros: { idProdutoFornecedor } },
+    acesso,
+  })
+  const regra = Array.isArray(resposta) ? resposta[0] : resposta
+  registrarCampos('regra-aceitacao-beneficiario', [regra])
+  const faixas = (regra?.grauRelacionamento ?? []).flatMap(l => l.regraFaixaEtaria ?? [])
+  registrarCampos('regra-aceitacao-beneficiario.faixa', faixas)
+  if (import.meta.dev) {
+    // Só contagens (nunca valores): quantas faixas marcam movimentação cadastral e quantas opções de documento trazem.
+    console.info(JSON.stringify({
+      origem: 'diagnostico-aceitacao',
+      linhas: (regra?.grauRelacionamento ?? []).length,
+      faixas: faixas.length,
+      tiposDeMovimentacao: [...new Set(faixas.flatMap(f => (Array.isArray(f.dependenteTipoMovimentacao) ? f.dependenteTipoMovimentacao : [f.dependenteTipoMovimentacao])).map(String))],
+      faixasComDocumento: faixas.filter(f => (f.dependenteDocumentos ?? []).some(o => (o ?? []).length)).length,
+      formaDosDocumentos: [...new Set(faixas.map(f => { const d = (f as Record<string, unknown>).dependenteDocumentos; return Array.isArray(d) ? 'lista(' + d.length + ')' + (d.length && Array.isArray(d[0]) ? 'deListas' : d.length ? typeof d[0] : '') : typeof d }))],
+      comTitularDocumentos: faixas.filter(f => { const d = (f as Record<string, unknown>).titularDocumentos; return Array.isArray(d) && d.flat().length > 0 }).length,
+      comContributariedade: faixas.filter(f => { const d = (f as Record<string, unknown>).documentoContributariedade; return Array.isArray(d) && d.flat().length > 0 }).length,
+      comDownload: faixas.filter(f => { const d = (f as Record<string, unknown>).documentoDownload; return Array.isArray(d) && d.flat().length > 0 }).length,
+    }))
+  }
+  return parentescosDaMovimentacao(regra)
+}
+
+/**
+ * Protocolos (fluxos abertos) de um contrato, do serviço de gestão de protocolos: é de onde o portal antigo tira
+ * o "Acompanhamento de solicitação". Só leitura. O número vai como NÚMERO (o grafo guarda número).
+ */
+export async function protocolosDoContratoNoGateway(numeroContrato: string): Promise<ProtocoloBruto[]> {
+  const { acesso } = await credenciais()
+  const numero = Number(numeroContrato)
+  if (!Number.isFinite(numero)) return []
+  const lista = await chamarGateway<ProtocoloBruto[] | null>({
+    servico: 'api-vexur-operacao-gestao-protocolos',
+    caminho: '/portal/obterProtocolosPorNumeroContrato',
+    metodo: 'POST',
+    corpo: { numeroContrato: numero },
+    acesso,
+  })
+  registrarCampos('protocolo', Array.isArray(lista) ? lista : [])
+  return Array.isArray(lista) ? lista : []
+}
+
+/** Nome de quem entra ou sai, tirado do payload do protocolo (só o nome; o resto do payload não sai do servidor). */
+export async function pessoaDoProtocoloNoGateway(idWorkflow: number | string): Promise<string | undefined> {
+  const { acesso } = await credenciais()
+  const r = await chamarGateway<{ payload?: unknown } | null>({
+    servico: 'api-vexur-operacao-gestao-protocolos',
+    caminho: '/obterPayload',
+    metodo: 'POST',
+    corpo: { idWorkflow },
+    acesso,
+  }).catch(() => null)
+  let payload: Record<string, unknown> | undefined
+  try { payload = typeof r?.payload === 'string' ? JSON.parse(r.payload) : (r?.payload as Record<string, unknown> | undefined) } catch { return undefined }
+  const primeiro = (v: unknown) => (Array.isArray(v) ? v[0] : v) as { nome?: unknown } | undefined
+  const nome = primeiro(payload?.proponentes)?.nome ?? primeiro(payload?.beneficiarios)?.nome ?? primeiro(payload?.beneficiario)?.nome
+  return typeof nome === 'string' && nome.trim() ? nome.trim() : undefined
+}
+
+/**
+ * Porte da empresa ("PORTE 1", "PORTE 2 ", "PORTE 3" ou "Não se aplica"): campo `contratacaoPorte` do CONTRATO DO
+ * FORNECEDOR ao qual o plano do titular pertence (cadastro de contrato fornecedor). Só leitura.
+ */
+export async function porteDoContratoNoGateway(contrato: ContratoBruto): Promise<string | undefined> {
+  const { acesso } = await credenciais()
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco))
+  const id = Number(produtoPrincipal(titular?.produto ?? [])?.idContratoFornecedor)
+  if (!id) return undefined
+  const resposta = await chamarGateway<Record<string, unknown> | Record<string, unknown>[] | null>({
+    servico: 'api-vexur-checklist-produto',
+    caminho: '/obterContratoFornecedor',
+    metodo: 'POST',
+    corpo: { filtros: [{ id }] },
+    acesso,
+    tempoLimiteMs: 40_000,
+  })
+  const cf = Array.isArray(resposta) ? resposta[0] : resposta
+  registrarCampos('contrato-fornecedor', [cf])
+  // O cadastro devolve a pessoa jurídica com o(s) contrato(s) dentro de contratoDoFornecedor; vale o do plano do titular.
+  const interno = cf?.contratoDoFornecedor
+  const contratos = (Array.isArray(interno) ? interno : interno ? [interno] : []) as Record<string, unknown>[]
+  registrarCampos('contrato-fornecedor.contrato', contratos)
+  const doPlano = contratos.find(c => Number(c.id) === id) ?? contratos[0]
+  // contratacaoPorte nem sempre está preenchido: sem ele, vale o nome do contrato e a faixa de vidas (porteDoCadastro).
+  return porteDoCadastro({ ...cf, ...doPlano })
+}
+
+/** Dia do mês em que a vigência do titular começa (01, 10, 15 ou 20): o dependente entra sempre nesse mesmo dia. */
+function diaDaVigenciaDoTitular(contrato: ContratoBruto): number | undefined {
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco))
+  const doTermo = Number(produtoPrincipal(titular?.produto ?? [])?.diaInicioVigencia)
+  if (doTermo >= 1 && doTermo <= 31) return doTermo
+  const inicio = paraDataIso(titular?.dataInicio)
+  const dia = inicio ? Number(inicio.slice(8, 10)) : 0
+  return dia >= 1 ? dia : undefined
+}
+
+/**
+ * Datas de início do plano que o calendário do Vexur libera para o titular, só as que caem no MESMO DIA da vigência
+ * dele (o dependente nunca muda o dia de vigência). Só leitura.
+ */
+export async function iniciosDeVigenciaNoGateway(contrato: ContratoBruto): Promise<{ dia?: number, datas: { iso: string, rotulo: string }[] }> {
+  const { acesso } = await credenciais()
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco))
+  const ids = (titular?.produto ?? []).filter(p => !p.dataFim).map(p => p.idProdutoFornecedor).filter(Boolean)
+  if (!ids.length) return { datas: [] }
+  const lista = await chamarGateway<Record<string, unknown>[] | null>({
+    servico: 'api-vexur-regra-aceitacao-calendario',
+    caminho: '/obterInicioVigenciaDisponiveis',
+    metodo: 'POST',
+    corpo: { idsProdutoFornecedor: ids },
+    acesso,
+  })
+  registrarCampos('calendario.inicio-vigencia', Array.isArray(lista) ? lista : [])
+  const dia = diaDaVigenciaDoTitular(contrato)
+  const vistas = new Set<string>()
+  const datas = (Array.isArray(lista) ? lista : []).flatMap((item) => {
+    // O serviço manda a data em milissegundos (dataInicioVigencia) e/ou já formatada (dd/mm/aaaa).
+    const bruto = item.dataInicioVigencia ?? item.dataInicio
+    const formatada = String(item.dataInicioVigenciaFormatada ?? '')
+    const iso = /^\d{2}\/\d{2}\/\d{4}$/.test(formatada) ? formatada.split('/').reverse().join('-') : paraDataIso(bruto as number | string | null)
+    if (!iso || vistas.has(iso) || (dia && Number(iso.slice(8, 10)) !== dia)) return []
+    vistas.add(iso)
+    return [{ iso, rotulo: formatada || iso.split('-').reverse().join('/') }]
+  }).sort((a, b) => a.iso.localeCompare(b.iso))
+  return { dia, datas }
+}
+
+/**
+ * Preço de cada plano do titular para o dependente, pela tabela de preço do Vexur (um por plano).
+ * undefined = não achou o preço de algum plano.
+ */
+async function precosDoDependente(
+  contrato: ContratoBruto,
+  dependente: { parentesco: string, nome: string, sexo: string, estadoCivil: string, nascimentoMs: number },
+  inicioMs: number,
+): Promise<{ plano: NonNullable<BeneficiarioBruto['produto']>[number], valor: number }[] | undefined> {
+  const { acesso } = await credenciais()
+  const agora = Date.now()
+  const vigente = (fim: unknown) => !fim || Number(fim) > agora
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco))
+  const planos = (titular?.produto ?? []).filter(p => vigente(p.dataFim))
+  const inicio = new Date(inicioMs)
+  const competencia = inicio.getFullYear() * 100 + inicio.getMonth() + 1
+  const precos: { plano: (typeof planos)[number], valor: number }[] = []
+  for (const plano of planos) {
+    const resposta = await chamarGateway<{ resultado?: string, valores?: { valorComercial?: number | null } } | null>({
+      servico: 'api-vexur-regra-venda-tabela-preco',
+      caminho: '/validarRegra',
+      metodo: 'POST',
+      corpo: {
+        parentesco: dependente.parentesco, profissao: undefined, nome: dependente.nome, genero: dependente.sexo,
+        estadoCivil: dependente.estadoCivil, idadeFinalUniversitario: null, dataInicio: inicioMs, dataNascimento: dependente.nascimentoMs,
+        produtos: [{ ...plano, dataInicio: inicioMs }], validarPreco: false, anoMesCompetencia: String(competencia),
+      },
+      acesso,
+    }).catch(() => null)
+    const valor = resposta?.valores?.valorComercial
+    if (typeof valor !== 'number') return undefined
+    precos.push({ plano, valor })
+  }
+  return precos
+}
+
+/**
+ * Inclusão de dependente pelo FLUXO do Vexur: o mesmo "Inclusão de beneficiário no portal" do portal antigo
+ * (recepção automática, análise técnica e administrativa manuais, e a inclusão). Grava no sistema: só roda com
+ * NUXT_PERMITIR_ESCRITA=true. Por ora sem assinatura, sem PDF e sem documentos, como combinado.
+ */
+export async function incluirDependenteNoFluxo(
+  contrato: ContratoBruto,
+  dependente: {
+    parentesco: string, nome: string, cpf: string, nascimento: string, sexo: string, estadoCivil: string, nomeMae: string, naoPossuiNomeMae?: boolean,
+    naturalidade?: string, rg?: string, orgaoExpedidor?: string, ufRg?: string, pisPasep?: string, cartaoSus: string, declaracaoNascidoVivo?: string,
+  },
+  inicioIso: string,
+  evento?: { data: string },
+  planoAnterior?: PlanoAnterior,
+  vigenciaNaAprovacao?: boolean,
+): Promise<{ protocolo: string }> {
+  const { acesso } = await credenciais()
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco)) as Record<string, unknown> | undefined
+  if (!titular) throw createError({ statusCode: 404, message: 'Não encontramos o titular deste contrato.' })
+  const eventoMs = evento ? new Date(evento.data + 'T00:00:00-03:00').getTime() : undefined
+  const inicioMs = new Date(inicioIso + 'T00:00:00-03:00').getTime()
+  const nascimentoMs = new Date(dependente.nascimento + 'T00:00:00-03:00').getTime()
+  if (Number.isNaN(inicioMs) || Number.isNaN(nascimentoMs)) throw createError({ statusCode: 400, message: 'A data de início ou de nascimento não está certa.' })
+
+  const precos = await precosDoDependente(contrato, { parentesco: dependente.parentesco, nome: dependente.nome, sexo: dependente.sexo, estadoCivil: dependente.estadoCivil, nascimentoMs }, inicioMs)
+  if (!precos) throw createError({ statusCode: 422, message: 'Não encontramos o preço desse plano na tabela. Fale com a gente para confirmar o valor.' })
+
+  const proponente = {
+    nome: dependente.nome, cpf: dependente.cpf, dataNascimento: nascimentoMs, sexo: dependente.sexo, estadoCivil: dependente.estadoCivil,
+    parentesco: dependente.parentesco, nomeMae: dependente.naoPossuiNomeMae ? '' : dependente.nomeMae, naoPossuiNomeMae: !!dependente.naoPossuiNomeMae,
+    naturalidade: dependente.naturalidade || undefined, Rg: dependente.rg || undefined, orgaoRg: dependente.orgaoExpedidor || undefined,
+    UnidadeFederativaRg: dependente.ufRg || undefined, pisPasep: dependente.pisPasep || undefined,
+    cartaoNacionaoSaude: dependente.cartaoSus, declaracaoNascidoVivo: dependente.declaracaoNascidoVivo || undefined,
+    dataInicio: inicioMs,
+    // Inclusão por evento (recém-nascido, recém-casado, recém-tutelado): a data do evento vai junto, como no CRM.
+    dataEvento: eventoMs,
+    // Plano de saúde anterior (inclusão comum), com os mesmos nomes de campo do CRM.
+    possuiPlanoAtualmente: !!planoAnterior,
+    modalidadePlanoAnterior: planoAnterior?.tipo,
+    operadoraAnterior: planoAnterior?.operadora,
+    planoAnterior: planoAnterior?.plano,
+    tempoPlanoAnterior: planoAnterior ? Number(planoAnterior.tempoMeses) : undefined,
+    dataUltimoPagamentoPlanoAtual: planoAnterior ? new Date(planoAnterior.ultimoPagamento + 'T00:00:00-03:00').getTime() : undefined,
+    // Os mesmos planos do titular, cada um com o preço da tabela para o dependente.
+    produto: precos.map(p => ({ ...p.plano, dataInicio: inicioMs, valorVenda: p.valor })),
+  }
+  const aberto = await chamarGateway<{ workflow?: { protocolo?: string } } | null>({
+    servico: 'api-vexur-workflow-process',
+    caminho: '/iniciar-processo',
+    metodo: 'POST',
+    corpo: {
+      processo: 'Inclusão de beneficiário no portal',
+      // O número do contrato no TOPO é o que o serviço de protocolos usa para achar o pedido em Meus pedidos.
+      numeroContrato: Number(contrato.numeroContrato),
+      protocolo: null,
+      agendamento: null,
+      contexto: { tipo: 'ContratoAdesao', id: contrato.id },
+      payload: {
+        numeroContrato: contrato.numeroContrato,
+        idContratoAdesao: contrato.id,
+        titular,
+        tipoProduto: (contrato as { tipoProduto?: string }).tipoProduto,
+        tipoContratacao: contrato.tipoContratacao,
+        vigenciaEscolhida: { dataInicioVigencia: inicioMs, dataInicioVigenciaFormatada: inicioIso.split('-').reverse().join('/') },
+        inclusaoRecem: !!eventoMs,
+        // Evento: o plano começa na aprovação da inclusão; a data de início enviada é só a de hoje, provisória.
+        vigenciaNaAprovacao: !!vigenciaNaAprovacao,
+        proponentes: [proponente],
+        regrasAceitacao: [{ tipoParametroRegra: 'ACEITAÇÃO DE BENEFICIÁRIO', mensagem: {}, dataValidacao: null, resultado: 'PENDENTE', proponente, documentacao: [] }],
+      },
+    },
+    acesso,
+    escrita: true,
+  })
+  const protocolo = String(aberto?.workflow?.protocolo ?? '').trim()
+  if (!protocolo) throw createError({ statusCode: 502, message: 'O sistema recebeu o pedido, mas não devolveu o protocolo. Confira em Meus pedidos antes de tentar de novo.' })
+  return { protocolo }
+}
+
+/**
+ * Quanto a família paga hoje (soma dos planos ativos de cada pessoa) e, se vier a pessoa que vai entrar, quanto ela custa
+ * pela TABELA DE PREÇO do Vexur (mesmo cálculo do portal antigo: um por plano do titular, pela idade e parentesco).
+ * Só leitura. O contrato é o do titular escolhido, já conferido contra a empresa.
+ */
+export async function simularInclusaoNoGateway(
+  contrato: ContratoBruto,
+  dependente?: { parentesco: string, nome: string, sexo: string, estadoCivil: string, nascimento: string },
+): Promise<SimulacaoInclusao> {
+  const { acesso } = await credenciais()
+  const agora = Date.now()
+  const vigente = (fim: unknown) => !fim || Number(fim) > agora || (typeof fim === 'string' && Number.isNaN(Number(fim)) && Date.parse(fim) > agora)
+  const ativos = (contrato.beneficiarios ?? []).filter(b => vigente(b.dataFim))
+  const somaDe = (b: { produto?: { valorVenda?: number | null, dataFim?: unknown }[] | null }) =>
+    (b.produto ?? []).filter(p => vigente(p.dataFim)).reduce((n, p) => n + Number(p.valorVenda ?? 0), 0)
+  const pessoas = ativos.map(b => ({ nome: String(b.nome ?? '').trim(), parentesco: parentescoLegivel(b.parentesco), valor: somaDe(b) }))
+  const total = pessoas.reduce((n, p) => n + p.valor, 0)
+  const resultado: SimulacaoInclusao = { familia: { pessoas, total } }
+  if (!dependente) return resultado
+
+  const inicio = new Date(); inicio.setHours(0, 0, 0, 0)
+  const nascimento = new Date(dependente.nascimento + 'T00:00:00-03:00').getTime()
+  if (Number.isNaN(nascimento)) return { ...resultado, aviso: 'Ainda não dá para simular o valor.' }
+  const precos = await precosDoDependente(contrato, { parentesco: dependente.parentesco, nome: dependente.nome, sexo: dependente.sexo, estadoCivil: dependente.estadoCivil, nascimentoMs: nascimento }, inicio.getTime())
+  if (!precos?.length) return { ...resultado, aviso: 'Não encontramos o preço desse plano na tabela. Fale com a gente para confirmar o valor.' }
+  const produtos = precos.map(p => ({ nome: String(p.plano.nomeAmigavelProduto ?? p.plano.nomePlano ?? 'Plano'), valor: p.valor }))
+  const valor = produtos.reduce((n, p) => n + p.valor, 0)
+  return { ...resultado, dependente: { valor, produtos }, novoTotal: total + valor, diferenca: valor }
+}
+
+/**
+ * Alteração de e-mail pelo FLUXO do Vexur (o mesmo "Alteração de e-mail" da tela do portal antigo):
+ * 1) o serviço de alteração cadastral valida a regra; 2) abre o processo no workflow, que aplica na hora.
+ * Grava no sistema: só roda com NUXT_PERMITIR_ESCRITA=true. O contrato vem do servidor, nunca do navegador.
+ */
+export async function alterarEmailNoFluxo(contrato: ContratoBruto, novoEmail: string): Promise<{ protocolo: string }> {
+  const { acesso } = await credenciais()
+  const fluxo = FLUXO_DA_ALTERACAO.email
+  const titular = (contrato.beneficiarios ?? []).find(b => ehTitular(b.parentesco)) as Record<string, unknown> | undefined
+  if (!titular) throw createError({ statusCode: 404, message: 'Não encontramos o titular deste contrato.' })
+  const numeroContrato = String(contrato.numeroContrato)
+  const meios = (contrato.meiosContatos ?? []) as Record<string, unknown>[]
+  const atual = meios.find(m => String(m.tipo ?? '').toLowerCase() === 'e-mail') ?? {}
+  const novo: Record<string, unknown> = { ...atual, tipo: 'e-mail', endereco: novoEmail }
+  const nascimento = String(titular.dataNascimento ?? '')
+  const beneficiario = {
+    ...titular,
+    dataNascimento_: nascimento.includes('/') ? Date.parse(`${nascimento.split('/').reverse().join('-')} 00:00:00 GMT-0300`) : titular.dataNascimento,
+  }
+  const regra: Record<string, unknown> = {
+    tipoParametroRegra: fluxo.tipoParametroRegra,
+    resultado: 'PENDENTE',
+    tipoDadoAlterado: 'E-mail',
+    nomeCampoSistemico: 'endereco',
+    beneficiario,
+    identificador: fluxo.tipoParametroRegra + numeroContrato,
+    dados: { dadoAtual: atual.endereco, dadoNovo: novoEmail, id: novo.id, detalheDados: novo },
+  }
+
+  // 1) Regra de alteração cadastral (só confere; não grava).
+  const validacao = await chamarGateway<Record<string, unknown> | null>({
+    servico: 'api-vexur-regra-movimentacao-alteracao-cadastral',
+    caminho: '/email/validarRegra',
+    metodo: 'POST',
+    corpo: {
+      dataReferencia: Date.now(),
+      tipoParametroRegra: fluxo.tipoParametroRegra,
+      tipoDadoAlterado: regra.tipoDadoAlterado,
+      beneficiario,
+      dados: novo,
+      responsavelFinanceiro: beneficiario,
+      responsavelLegal: beneficiario,
+      titular,
+      numeroContrato,
+      idContratoAdesao: contrato.id,
+    },
+    acesso,
+  })
+  registrarCampos('alteracao.validarRegra', [validacao])
+  if (String(validacao?.resultado ?? '').toUpperCase() === 'FALHA') {
+    throw createError({ statusCode: 422, message: 'O sistema não aceitou essa alteração de e-mail. Fale com a gente.' })
+  }
+  Object.assign(regra, validacao ?? {}, { tipoParametroRegra: fluxo.tipoParametroRegra })
+
+  // 2) Abre o processo no workflow (o protocolo nasce aqui).
+  const aberto = await chamarGateway<{ workflow?: { protocolo?: string } } | null>({
+    servico: 'api-vexur-workflow-process',
+    caminho: '/iniciar-processo',
+    metodo: 'POST',
+    corpo: {
+      processo: fluxo.processo,
+      numeroContrato: Number(numeroContrato),
+      agendamento: null,
+      contexto: { tipo: fluxo.contexto, id: contrato.id },
+      payload: {
+        numeroContrato,
+        regrasMovimentacao: [regra],
+        meiosContatosManutencao: [novo],
+        historicoAlteracao: [{ tipoDadoAlterado: 'E-mail', dadoAtual: atual.endereco, dadoNovo: novoEmail }],
+      },
+    },
+    acesso,
+    escrita: true,
+  })
+  const protocolo = String(aberto?.workflow?.protocolo ?? '').trim()
+  if (!protocolo) throw createError({ statusCode: 502, message: 'O sistema recebeu o pedido, mas não devolveu o protocolo. Confira em Meus pedidos antes de tentar de novo.' })
+  return { protocolo }
 }
 
 export async function contratoNoGateway(numeroContrato?: string): Promise<ContratoBruto> {

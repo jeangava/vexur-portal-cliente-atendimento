@@ -8,12 +8,16 @@ const sair = useSair()
 const seletor = useSeletorContratos()
 const trocando = computed(() => !!usuario.value?.contrato)
 
-onMounted(() => { seletor.value = true })
+// Até o popup abrir, mostra que está buscando: a tela de escolha só aparece se a pessoa fechar o popup.
+const pronto = ref(false)
+onMounted(() => { seletor.value = true; pronto.value = true })
 onBeforeUnmount(() => { seletor.value = false })
 </script>
 
 <template>
   <main class="flex min-h-dvh flex-col gap-7 px-6 pt-10 pb-8 lg:min-h-0 lg:px-10 lg:py-10">
+    <Carregando v-if="!pronto" texto="Buscando os seus contratos…" />
+    <template v-else>
     <BotaoVoltar v-if="trocando" to="/inicio" rotulo="Voltar" />
 
     <div class="flex flex-col gap-2">
@@ -38,6 +42,8 @@ onBeforeUnmount(() => { seletor.value = false })
       <Icone nome="sair" :tamanho="22" />
       Sair
     </button>
+
+    </template>
 
     <ModalContratos v-if="usuario?.podeTrocarContrato" />
   </main>

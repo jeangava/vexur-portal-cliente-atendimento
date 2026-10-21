@@ -33,6 +33,9 @@ export interface ProdutoBruto {
   caracteristicaProduto?: string | null
   /** Ex.: "COLETIVO EMPRESARIAL", "COLETIVO POR ADESÃO" */
   tipoContratacaoProduto?: string | null
+  /** Dia do mês em que a vigência começa (01, 10, 15 ou 20) */
+  diaInicioVigencia?: number | string | null
+  idContratoFornecedor?: number | string | null
 }
 
 /** Regra do legado (api-recepcao): principal = caracteristicaProduto ou tipoContratacao igual a "Principal". */
@@ -70,6 +73,13 @@ export interface BeneficiarioBruto {
   cartaoNacionalSaude?: string | number | null
   cartaoNacionaoSaude?: string | number | null
   nacionalidade?: string | null
+  naturalidade?: string | null
+  Rg?: string | null
+  rg?: string | null
+  orgaoRg?: string | null
+  UnidadeFederativaRg?: string | null
+  pisPasep?: string | null
+  declaracaoNascidoVivo?: string | number | null
   /** Quando o plano da pessoa foi suspenso (se estiver preenchida e ela não saiu, está suspensa) */
   dataSuspensao?: number | string | null
   parentesco?: string | null
@@ -85,6 +95,7 @@ export interface ContratoBruto {
   /** Número do grupo (empresa): os comunicados da empresa são guardados com ele */
   numeroContratoGrupo?: string | number | null
   tipoContratacao?: string | null
+  tipoProduto?: string | null
   beneficiarios?: BeneficiarioBruto[] | null
   /** Contatos e endereços do contrato: { tipo, endereco | numero } ou { logradouro, cep, ... } */
   meiosContatos?: unknown[] | null
@@ -677,6 +688,13 @@ export function dadosPessoaisDe(b: BeneficiarioBruto): DadosPessoais {
   const sus = texto(b.cartaoNacionalSaude ?? b.cartaoNacionaoSaude)
   if (sus) dados.cartaoSus = sus
   if (texto(b.nacionalidade)) dados.nacionalidade = textoLegivel(texto(b.nacionalidade))
+  if (texto(b.naturalidade)) dados.naturalidade = texto(b.naturalidade)
+  const rg = texto(b.Rg ?? b.rg)
+  if (rg) dados.rg = rg
+  const orgao = [texto(b.orgaoRg), texto(b.UnidadeFederativaRg)].filter(Boolean).join('/')
+  if (orgao) dados.orgaoExpedidor = orgao
+  if (texto(b.pisPasep)) dados.pisPasep = texto(b.pisPasep)
+  if (texto(b.declaracaoNascidoVivo)) dados.declaracaoNascidoVivo = texto(b.declaracaoNascidoVivo)
   return dados
 }
 

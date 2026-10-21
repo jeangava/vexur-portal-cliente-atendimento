@@ -78,7 +78,7 @@ const podeMovimentar = computed(() => !!usuario.value?.acesso.areas.includes('mo
         <h2 class="m-0 text-lg font-bold text-texto">
           Dependentes <span v-if="familia.dependentes.length" class="font-semibold text-apoio">({{ familia.dependentes.length }})</span>
         </h2>
-        <div v-if="familia.dependentes.length" class="grid gap-4 xl:grid-cols-2">
+        <div v-if="familia.dependentes.length" class="flex flex-col gap-4">
           <CartaoBeneficiario v-for="d in familia.dependentes" :key="d.numeroCarteirinha" :pessoa="d" />
         </div>
         <p v-else class="m-0 rounded-[22px] bg-white p-5 text-lg text-texto shadow-cartao">Você não tem dependentes no plano.</p>

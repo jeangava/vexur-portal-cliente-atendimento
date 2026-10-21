@@ -70,14 +70,59 @@ export function conferirDigitosNoAcesso(): boolean {
   return String(useRuntimeConfig().loginSomenteCpf) !== 'true'
 }
 
+/**
+ * Os planos do CPF e os dados do gateway são grandes: no cookie passariam de 4 KB e o navegador
+ * descartaria a sessão (CPF com muitos planos "não entra em nenhum"). Ficam no servidor, ligados
+ * ao cookie por um id aleatório; o cookie só guarda o que é pequeno.
+ */
+const PESADOS = ['contratos', 'gateway'] as const
+type SessaoNoCookie = Omit<DadosSessao, 'contratos' | 'gateway'> & { sid?: string }
+const COFRE_VALE_MS = 60 * 60 * 1000
+type Cofre = Map<string, { dados: Pick<DadosSessao, 'contratos' | 'gateway'>, expira: number }>
+// Em globalThis para sobreviver ao recarregamento do servidor em desenvolvimento.
+const global = globalThis as { __cofreSessao?: Cofre }
+const cofre: Cofre = (global.__cofreSessao ??= new Map())
+
+function limparCofre() {
+  const agora = Date.now()
+  for (const [id, v] of cofre) if (v.expira < agora) cofre.delete(id)
+}
+
 /** Sessão guardada em cookie criptografado e HttpOnly: o navegador não consegue ler. */
-export function usarSessao(event: H3Event) {
-  return useSession<DadosSessao>(event, {
+export async function usarSessao(event: H3Event) {
+  const s = await useSession<SessaoNoCookie>(event, {
     name: 'portal_sessao',
     password: senhaDaSessao(),
     maxAge: 60 * 60,
     cookie: { httpOnly: true, sameSite: 'lax', secure: !import.meta.dev, path: '/' },
   })
+  return {
+    get data(): DadosSessao {
+      const guardado = s.data.sid ? cofre.get(s.data.sid) : undefined
+      const { sid: _sid, ...leves } = s.data
+      return guardado && guardado.expira > Date.now() ? { ...leves, ...guardado.dados } : leves
+    },
+    async update(novo: Partial<DadosSessao>) {
+      const leves: Partial<SessaoNoCookie> = { ...novo }
+      const pesados: Partial<Pick<DadosSessao, 'contratos' | 'gateway'>> = {}
+      for (const k of PESADOS) {
+        if (k in novo) pesados[k] = novo[k] as never
+        delete (leves as Record<string, unknown>)[k]
+      }
+      if (Object.keys(pesados).length) {
+        limparCofre()
+        const sid = s.data.sid ?? randomBytes(24).toString('hex')
+        const antes = cofre.get(sid)?.dados ?? {}
+        cofre.set(sid, { dados: { ...antes, ...pesados }, expira: Date.now() + COFRE_VALE_MS })
+        leves.sid = sid
+      }
+      await s.update(leves)
+    },
+    async clear() {
+      if (s.data.sid) cofre.delete(s.data.sid)
+      await s.clear()
+    },
+  }
 }
 
 export async function exigirUsuario(event: H3Event): Promise<UsuarioPortal> {

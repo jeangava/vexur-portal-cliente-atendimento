@@ -175,6 +175,11 @@ export interface DadosPessoais {
   nomeMae?: string
   cartaoSus?: string
   nacionalidade?: string
+  naturalidade?: string
+  rg?: string
+  orgaoExpedidor?: string
+  pisPasep?: string
+  declaracaoNascidoVivo?: string
 }
 
 export interface ContatoCadastro {
@@ -499,6 +504,17 @@ export interface BeneficiariosEmpresa {
   titulares: TitularEmpresa[]
 }
 
+/** O que a regra de aceitação de beneficiário aceita incluir pela Movimentação cadastral. */
+export interface ParentescoDaInclusao {
+  parentesco: string
+  /** Opções de documentos: a pessoa cumpre UMA opção, e cada opção pode pedir vários documentos. Vazio = sem documento. */
+  documentos: string[][]
+  /** Prazo (dias) depois do evento em que ainda vale como evento; sem valor = sem limite */
+  prazoInclusaoDias?: number
+  /** Evento que esse parentesco pode ter: RN (recém-nascido), RC (recém-casado) ou RT (recém-tutelado) */
+  evento?: 'RN' | 'RC' | 'RT'
+}
+
 /** Uma pessoa a incluir: mesmo formato da linha da planilha (layout provisório). */
 export interface LinhaInclusaoEmpresa {
   nome: string
@@ -510,6 +526,42 @@ export interface LinhaInclusaoEmpresa {
   /** Só para dependente */
   cpfTitular: string
   plano: string
+  /** Só no formulário de uma pessoa: o titular escolhido na lista (o servidor confere contra a empresa) */
+  titularId?: string
+  /** Só no dependente: a inclusão é por evento (RN, RC ou RT) e a data dele (AAAA-MM-DD) */
+  eventoData?: string
+  /** Só no dependente, inclusão comum: o plano de saúde que a pessoa teve antes (quando tem) */
+  planoAnterior?: { tipo: string, operadora: string, plano: string, tempoMeses: string, ultimoPagamento: string }
+  /** Só no dependente: início do plano (AAAA-MM-DD), uma das datas do calendário, no mesmo dia da vigência do titular */
+  inicio?: string
+  /** Só no formulário de uma pessoa: o resto do cadastro */
+  dadosPessoais?: DadosPessoaisInclusao
+}
+
+/** Cadastro completo de quem entra: o mesmo que as pessoas atuais têm. */
+export interface DadosPessoaisInclusao {
+  sexo: string
+  estadoCivil: string
+  nomeMae: string
+  naoPossuiNomeMae?: boolean
+  naturalidade: string
+  rg: string
+  orgaoExpedidor: string
+  ufRg: string
+  pisPasep: string
+  cartaoSus: string
+  declaracaoNascidoVivo: string
+}
+
+/** Quanto a família paga hoje e quanto passa a pagar com a pessoa que vai entrar (tabela de preço do Vexur). */
+export interface SimulacaoInclusao {
+  familia: { pessoas: { nome: string, parentesco: string, valor: number }[], total: number }
+  /** Só quando já dá para simular (parentesco, nascimento e sexo preenchidos) */
+  dependente?: { valor: number, produtos: { nome: string, valor: number }[] }
+  novoTotal?: number
+  diferenca?: number
+  /** Quando não foi possível achar o preço */
+  aviso?: string
 }
 
 /** Resultado da conferência de uma linha da planilha. */

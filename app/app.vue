@@ -6,6 +6,8 @@ const comMenu = computed(() => !route.path.startsWith('/entrar'))
 
 <template>
   <div class="min-h-dvh bg-fundo">
+    <NuxtLoadingIndicator color="#6955c1" :height="4" />
+    <CarregandoPagina />
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>
